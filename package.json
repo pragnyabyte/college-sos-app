@@ -1,0 +1,23 @@
+{
+    "name":  "school-erp-sos",
+    "private":  true,
+    "version":  "1.0.0",
+    "type":  "module",
+    "scripts":  {
+                    "build":  "vite build",
+                    "dev:server":  "node --watch backend/server.js",
+                    "test":  "node --test backend/*.test.js",
+                    "dev:web":  "vite",
+                    "start":  "node backend/server.js",
+                    "dev":  "concurrently \"npm:dev:server\" \"npm:dev:web\"",
+                    "db:backup":  "node scripts/db-backup.js",
+                    "db:migrate":  "node scripts/db-migrate.js"
+                },
+    "dependencies":  {
+                         "concurrently":  "latest",
+                         "dotenv":  "^18.0.2",
+                         "mongodb":  "^7.6.0",
+                         "vite":  "latest",
+                         "ws":  "^8.21.3"
+                     }
+}
