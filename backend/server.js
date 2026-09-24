@@ -2,50 +2,353 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { authenticate, createSessionUser, issueToken, isAdmin } from './auth.js';
+import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, verifyResponderCredentials } from './auth.js';
 import { categories } from './domain.js';
 import { initDatabase } from './db.js';
-import { changeStatus, createIncident, exportCsv, getIncident, listIncidents, stats } from './service.js';
+import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, listIncidents, stats } from './service.js';
+import { initFirebaseAdmin, ensurePermanentResponder, registerResponderDevice, unregisterResponderDevice, getActiveResponderDevices, sendEmergencySosNotification, syncIncidentToFirestoreAdmin, deleteIncidentFromFirestoreAdmin, RESPONDER_ID } from './fcm.js';
 
-const port=Number(process.env.PORT||4000), limits=new Map();
-const json=(res,status,data)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','x-frame-options':'DENY','referrer-policy':'no-referrer'});res.end(JSON.stringify(data))};
-const body=async req=>{let raw='';for await(const c of req){raw+=c;if(raw.length>30_000)throw Object.assign(new Error('Payload too large'),{status:413})}try{return raw?JSON.parse(raw):{}}catch{throw Object.assign(new Error('Invalid JSON'),{status:400})}};
-const rate=req=>{const key=req.socket.remoteAddress||'unknown',now=Date.now(),v=limits.get(key)||{n:0,t:now};if(now-v.t>60_000){v.n=0;v.t=now}if(++v.n>80)throw Object.assign(new Error('Too many requests'),{status:429});limits.set(key,v)};
-const eventPayload=(event,incident)=>({event,id:incident.id,status:incident.status,priority:incident.priority,categoryId:incident.category_id,studentId:incident.student_id,studentName:incident.student_name,assignedDepartments:incident.assignedDepartments,location:{building:incident.location.building,floor:incident.location.floor,room:incident.location.room},message:event==='sos.created'?`New ${incident.priority} SOS: ${incident.id}`:`SOS ${incident.id} is now ${incident.status.replaceAll('_',' ').toLowerCase()}`,timestamp:new Date().toISOString()});
+const port = Number(process.env.PORT || 4000), limits = new Map();
+const json = (res, status, data) => {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer'
+  });
+  res.end(JSON.stringify(data));
+};
 
-const server=createServer(async(req,res)=>{try{rate(req);const url=new URL(req.url||'/','http://local'),path=url.pathname;
- if(path==='/api/health')return json(res,200,{status:'ok',websocket:'/ws',time:new Date().toISOString()});
- if((path==='/api/auth/login'||path==='/api/auth/demo')&&req.method==='POST'){
-  const b=await body(req);
-  const u=createSessionUser({name:b.name||b.userId||'User',regdNo:b.regdNo||b.userId||b.id||'REG-001',role:b.role||'STUDENT',departmentId:b.departmentId});
-  return json(res,200,{token:issueToken(u),user:u});
- }
- if(path==='/api/auth/users')return json(res,200,[]);
- if(path==='/api/categories')return json(res,200,categories);
- if(path.startsWith('/api/')){const u=authenticate(req);
-  if(path==='/api/sos'&&req.method==='POST'){const result=await createIncident(await body(req),u,req.socket.remoteAddress);broadcast(eventPayload('sos.created',result));return json(res,201,result)}
-  if((path==='/api/sos/my'||path==='/api/sos/active'||path==='/api/sos/admin')&&req.method==='GET'){if(path.endsWith('/admin')&&!isAdmin(u)&&u.role!=='DEPARTMENT_HEAD')return json(res,403,{error:'Admin only'});return json(res,200,await listIncidents(u,Object.fromEntries(url.searchParams)))}
-  if(path==='/api/sos/stats'&&req.method==='GET'){if(!isAdmin(u)&&u.role!=='DEPARTMENT_HEAD')return json(res,403,{error:'Admin only'});return json(res,200,await stats())}
-  if(path==='/api/sos/export.csv'&&req.method==='GET'){const csv=await exportCsv(u);res.writeHead(200,{'content-type':'text/csv','content-disposition':'attachment; filename="sos-incidents.csv"'});return res.end(csv)}
-  const match=path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel))?$/);if(match){const [,id,action]=match;if(req.method==='GET'&&!action)return json(res,200,await getIncident(id,u));if(req.method==='POST'&&action){const map={accept:'ACCEPTED',respond:'RESPONDING',arrive:'ARRIVED',resolve:'RESOLVED',cancel:'CANCELLED'},result=await changeStatus(id,map[action],await body(req),u,req.socket.remoteAddress);broadcast(eventPayload(`sos.${action}`,result));return json(res,200,result)}}
-  return json(res,404,{error:'API route not found'});
- }
- const dist=join(process.cwd(),'dist'),requested=path==='/'?'index.html':normalize(path).replace(/^(\.\.[/\\])+/,'').replace(/^[/\\]+/,''),file=join(dist,requested),target=existsSync(file)?file:join(dist,'index.html');if(existsSync(target)){const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml'};res.writeHead(200,{'content-type':mime[extname(target)]||'application/octet-stream'});return res.end(readFileSync(target))}return json(res,404,{error:'Not found'});
- }catch(e){json(res,e.status||500,{error:e.status?e.message:'Internal server error',incidentId:e.incidentId})}});
+const body = async (req) => {
+  let raw = '';
+  for await (const c of req) {
+    raw += c;
+    if (raw.length > 30_000) throw Object.assign(new Error('Payload too large'), { status: 413 });
+  }
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    throw Object.assign(new Error('Invalid JSON'), { status: 400 });
+  }
+};
 
-const wss=new WebSocketServer({noServer:true,handleProtocols:protocols=>protocols.has('sos')?'sos':false});
-function allowed(user,event){
- if(!user)return false;
- if(isAdmin(user))return true;
- if(user.role==='STUDENT')return event.studentId===user.id;
- if(['RESPONDER','DEPARTMENT_HEAD','TEACHER'].includes(user.role)){
-  if(!user.departmentId||user.departmentId==='DEPT_ADMIN'||user.departmentId==='ALL')return true;
-  return event.assignedDepartments&&event.assignedDepartments.includes(user.departmentId);
- }
- return false;
+const rate = (req) => {
+  const key = req.socket.remoteAddress || 'unknown', now = Date.now(), v = limits.get(key) || { n: 0, t: now };
+  if (now - v.t > 60_000) { v.n = 0; v.t = now; }
+  if (++v.n > 80) throw Object.assign(new Error('Too many requests'), { status: 429 });
+  limits.set(key, v);
+};
+
+const eventPayload = (event, incident) => ({
+  event,
+  id: incident.id,
+  status: incident.status,
+  priority: incident.priority,
+  categoryId: incident.category_id,
+  studentId: incident.student_id,
+  studentName: incident.student_name,
+  assignedDepartments: incident.assignedDepartments,
+  location: { building: incident.location.building, floor: incident.location.floor, room: incident.location.room },
+  message: event === 'sos.created' ? `New ${incident.priority} SOS: ${incident.id}` : `SOS ${incident.id} is now ${incident.status.replaceAll('_', ' ').toLowerCase()}`,
+  timestamp: new Date().toISOString()
+});
+
+const server = createServer(async (req, res) => {
+  try {
+    rate(req);
+    const url = new URL(req.url || '/', 'http://local'), path = url.pathname;
+
+    if (path === '/api/health') return json(res, 200, { status: 'ok', websocket: '/ws', time: new Date().toISOString() });
+
+    if (path === '/api/config') {
+      return json(res, 200, {
+        firebaseConfig: {
+          projectId: "college-sos-app-26aec",
+          appId: "1:888750165100:web:c5717332b893a6dc06dc49",
+          storageBucket: "college-sos-app-26aec.firebasestorage.app",
+          apiKey: "AIzaSyBsijDOP3woYoWK0An37rYTDu0zCWdeYhg",
+          authDomain: "college-sos-app-26aec.firebaseapp.com",
+          messagingSenderId: "888750165100",
+          measurementId: "G-7NKML0LRT6",
+          projectNumber: "888750165100"
+        },
+        vapidKey: process.env.FIREBASE_VAPID_KEY || ""
+      });
+    }
+
+    if ((path === '/api/auth/login' || path === '/api/auth/demo') && req.method === 'POST') {
+      const b = await body(req);
+      const regd = String(b.regdNo || b.userId || b.id || '').trim();
+      const role = String(b.role || 'STUDENT').trim().toUpperCase();
+
+      if (regd.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regd)) {
+        return json(res, 400, { error: 'Email addresses are not accepted. Please enter a valid Registration / Roll / ID No.' });
+      }
+
+      let u;
+      if (regd.toUpperCase() === 'RESP-001' || role === 'RESPONDER') {
+        const pin = b.pin || b.password;
+        u = await verifyResponderCredentials('RESP-001', pin);
+      } else {
+        u = createSessionUser({
+          name: b.name || b.userId || 'Student',
+          regdNo: b.regdNo || b.userId || b.id || 'REG-001',
+          role: b.role || 'STUDENT',
+          departmentId: b.departmentId
+        });
+      }
+      return json(res, 200, { token: issueToken(u), user: u });
+    }
+
+    if (path === '/api/auth/responder-login' && req.method === 'POST') {
+      const b = await body(req);
+      const u = await verifyResponderCredentials(b.responderId || 'RESP-001', b.pin || b.password);
+      return json(res, 200, { token: issueToken(u), user: u });
+    }
+
+    if (path === '/api/auth/users') return json(res, 200, []);
+    if (path === '/api/categories') return json(res, 200, categories);
+
+    // Service Worker route
+    if (path === '/firebase-messaging-sw.js') {
+      const swCandidates = [
+        join(process.cwd(), 'frontend', 'public', 'firebase-messaging-sw.js'),
+        join(process.cwd(), 'frontend', 'firebase-messaging-sw.js'),
+        join(process.cwd(), 'dist', 'firebase-messaging-sw.js')
+      ];
+      for (const swPath of swCandidates) {
+        if (existsSync(swPath)) {
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'Service-Worker-Allowed': '/',
+            'cache-control': 'no-cache, no-store, must-revalidate'
+          });
+          return res.end(readFileSync(swPath));
+        }
+      }
+    }
+
+    if (path === '/api/sos/stream' && req.method === 'GET') {
+      let uStream = null;
+      const tokenParam = url.searchParams.get('token');
+      if (tokenParam) req.headers.authorization = `Bearer ${tokenParam}`;
+      try {
+        uStream = authenticate(req);
+      } catch (err) {
+        return json(res, 401, { error: 'Authentication required for live stream' });
+      }
+
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        'connection': 'keep-alive',
+        'access-control-allow-origin': '*'
+      });
+      res.write(`data: ${JSON.stringify({ event: 'connection.ready', message: 'SSE stream connected', user: uStream.id })}\n\n`);
+
+      const client = { res, user: uStream };
+      sseGlobalClients.add(client);
+      console.log(`[SOS:Backend] Real-time SSE listener attached for user ${uStream.name} (${uStream.role})`);
+
+      req.on('close', () => {
+        sseGlobalClients.delete(client);
+        console.log(`[SOS:Backend] Real-time SSE listener closed for ${uStream.id}`);
+      });
+      return;
+    }
+
+    if (path.startsWith('/api/')) {
+      const u = authenticate(req);
+
+      if (path === '/api/sos' && req.method === 'POST') {
+        console.log(`[SOS:Backend] 1. Received SOS creation request from ${u.name} (${u.id})`);
+        const result = await createIncident(await body(req), u, req.socket.remoteAddress);
+        console.log(`[SOS:Backend] 2. Incident created: ${result.id} (${result.priority}) at ${result.location.building}`);
+        broadcast(eventPayload('sos.created', result));
+        console.log(`[SOS:Backend] 3. Dispatched real-time broadcast to connected responder listeners`);
+        syncIncidentToFirestoreAdmin(result).catch(() => {});
+        sendEmergencySosNotification(result).then(fcmRes => {
+          console.log(`[SOS:Backend] 4. FCM push notification result: ${fcmRes.deliveredCount}/${fcmRes.totalDevices} delivered`);
+        }).catch(e => console.warn('[FCM] Push dispatch notice:', e.message));
+        return json(res, 201, result);
+      }
+
+      if (path === '/api/responder/device' && req.method === 'POST') {
+        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
+        const b = await body(req);
+        console.log(`[SOS:Backend] Registering device token for RESP-001 (Device ID: ${b.deviceId})`);
+        const reg = await registerResponderDevice({
+          responderId: 'RESP-001',
+          deviceId: b.deviceId,
+          fcmToken: b.fcmToken,
+          userAgent: req.headers['user-agent']
+        });
+        return json(res, 200, reg);
+      }
+
+      if (path.startsWith('/api/responder/device/') && req.method === 'DELETE') {
+        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
+        const devId = path.split('/')[4];
+        await unregisterResponderDevice(devId, 'RESP-001');
+        return json(res, 200, { success: true });
+      }
+
+      if (path === '/api/responder/devices' && req.method === 'GET') {
+        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
+        return json(res, 200, await getActiveResponderDevices('RESP-001'));
+      }
+
+      if (path === '/api/responder/test-alert' && req.method === 'POST') {
+        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
+        console.log(`[SOS:Backend] Test drill emergency alert triggered by ${u.name}`);
+        const testIncident = {
+          id: 'TEST-' + Math.floor(1000 + Math.random() * 9000),
+          category_id: 'security',
+          priority: 'CRITICAL',
+          student_name: 'Test Emergency Drill',
+          student_id: 'DRILL-01',
+          location: { building: 'Command Center', floor: '1st Floor', room: 'Station 1' },
+          description: 'Emergency test notification trigger for RESP-001.',
+          created_at: new Date().toISOString()
+        };
+        broadcast(eventPayload('sos.created', testIncident));
+        syncIncidentToFirestoreAdmin(testIncident).catch(() => {});
+        const fcmRes = await sendEmergencySosNotification(testIncident);
+        return json(res, 200, { success: true, fcm: fcmRes, testIncident });
+      }
+
+      if ((path === '/api/sos/my' || path === '/api/sos/active' || path === '/api/sos/admin') && req.method === 'GET') {
+        if (path.endsWith('/admin') && !isAdmin(u) && !isResponder(u) && u.role !== 'DEPARTMENT_HEAD') {
+          return json(res, 403, { error: 'Admin or Responder only' });
+        }
+        return json(res, 200, await listIncidents(u, Object.fromEntries(url.searchParams)));
+      }
+
+      if (path === '/api/sos/stats' && req.method === 'GET') {
+        if (!isAdmin(u) && !isResponder(u) && u.role !== 'DEPARTMENT_HEAD') {
+          return json(res, 403, { error: 'Admin or Responder only' });
+        }
+        return json(res, 200, await stats());
+      }
+
+      if (path === '/api/sos/export.csv' && req.method === 'GET') {
+        const csv = await exportCsv(u);
+        res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="sos-incidents.csv"' });
+        return res.end(csv);
+      }
+
+      const match = path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel))?$/);
+      if (match) {
+        const [, id, action] = match;
+        if (req.method === 'GET' && !action) return json(res, 200, await getIncident(id, u));
+        if (req.method === 'DELETE' && !action) {
+          console.log(`[SOS:Backend] Received request to delete incident ${id} by ${u.name} (${u.id})`);
+          const resDel = await deleteIncident(id, u, req.socket.remoteAddress);
+          deleteIncidentFromFirestoreAdmin(resDel.id).catch(() => {});
+          if (resDel._id) deleteIncidentFromFirestoreAdmin(resDel._id).catch(() => {});
+          broadcast({ event: 'sos.deleted', id: resDel.id, _id: resDel._id, timestamp: new Date().toISOString() });
+          console.log(`[SOS:Backend] Permanently deleted incident ${resDel.id} (_id: ${resDel._id}) from MongoDB`);
+          return json(res, 200, { success: true, message: 'SOS alert deleted successfully.', id: resDel.id, _id: resDel._id });
+        }
+        if (req.method === 'POST' && action) {
+          const map = { accept: 'ACCEPTED', respond: 'RESPONDING', arrive: 'ARRIVED', resolve: 'RESOLVED', cancel: 'CANCELLED' };
+          const result = await changeStatus(id, map[action], await body(req), u, req.socket.remoteAddress);
+          broadcast(eventPayload(`sos.${action}`, result));
+          return json(res, 200, result);
+        }
+      }
+
+      return json(res, 404, { error: 'API route not found' });
+    }
+
+    // Static site routing
+    const dist = join(process.cwd(), 'dist');
+    const isResponderRoute = path === '/responder' || path.startsWith('/responder/');
+    const requested = (path === '/' || isResponderRoute) ? 'index.html' : normalize(path).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
+    const file = join(dist, requested);
+    const target = existsSync(file) ? file : join(dist, 'index.html');
+
+    if (existsSync(target)) {
+      const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+      res.writeHead(200, { 'content-type': mime[extname(target)] || 'application/octet-stream' });
+      return res.end(readFileSync(target));
+    }
+
+    return json(res, 404, { error: 'Not found' });
+  } catch (e) {
+    json(res, e.status || 500, { error: e.status ? e.message : 'Internal server error', incidentId: e.incidentId });
+  }
+});
+
+const wss = new WebSocketServer({ noServer: true, handleProtocols: protocols => protocols.has('sos') ? 'sos' : false });
+const sseGlobalClients = new Set();
+
+function allowed(user, event) {
+  if (!user) return false;
+  if (isAdmin(user) || isResponder(user)) return true;
+  if (user.role === 'STUDENT') return event.studentId === user.id;
+  if (['RESPONDER', 'DEPARTMENT_HEAD', 'TEACHER'].includes(user.role)) {
+    if (!user.departmentId || user.departmentId === 'DEPT_ADMIN' || user.departmentId === 'ALL') return true;
+    return event.assignedDepartments && event.assignedDepartments.includes(user.departmentId);
+  }
+  return false;
 }
-function broadcast(event){const encoded=JSON.stringify(event);for(const ws of wss.clients)if(ws.readyState===WebSocket.OPEN&&allowed(ws.user,event))ws.send(encoded)}
-server.on('upgrade',(req,socket,head)=>{try{const url=new URL(req.url||'/','http://local');if(url.pathname!=='/ws')throw new Error('Unknown WebSocket route');const protocols=String(req.headers['sec-websocket-protocol']||'').split(',').map(x=>x.trim()),token=protocols[1];if(!token)throw new Error('Authentication required');req.headers.authorization=`Bearer ${token}`;const user=authenticate(req);wss.handleUpgrade(req,socket,head,ws=>{ws.user=user;ws.isAlive=true;ws.on('pong',()=>ws.isAlive=true);ws.send(JSON.stringify({event:'connection.ready',message:'Live SOS notifications connected',timestamp:new Date().toISOString()}));wss.emit('connection',ws,req)})}catch{socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');socket.destroy()}});
-const heartbeat=setInterval(()=>{for(const ws of wss.clients){if(ws.isAlive===false){ws.terminate();continue}ws.isAlive=false;ws.ping()}},30000);heartbeat.unref();
+
+function broadcast(event) {
+  const encoded = JSON.stringify(event);
+  console.log(`[SOS:Backend] Broadcasting event '${event.event}' for incident ${event.id} to ${wss.clients.size} WS clients & ${sseGlobalClients.size} SSE clients.`);
+  for (const ws of wss.clients) {
+    if (ws.readyState === WebSocket.OPEN && allowed(ws.user, event)) {
+      ws.send(encoded);
+    }
+  }
+  for (const client of sseGlobalClients) {
+    try {
+      if (allowed(client.user, event)) {
+        client.res.write(`data: ${encoded}\n\n`);
+      }
+    } catch {
+      sseGlobalClients.delete(client);
+    }
+  }
+}
+
+server.on('upgrade', (req, socket, head) => {
+  try {
+    const url = new URL(req.url || '/', 'http://local');
+    if (url.pathname !== '/ws') throw new Error('Unknown WebSocket route');
+    const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map(x => x.trim()), token = protocols[1];
+    if (!token) throw new Error('Authentication required');
+    req.headers.authorization = `Bearer ${token}`;
+    const user = authenticate(req);
+    wss.handleUpgrade(req, socket, head, ws => {
+      ws.user = user;
+      ws.isAlive = true;
+      ws.on('pong', () => ws.isAlive = true);
+      ws.send(JSON.stringify({ event: 'connection.ready', message: 'Live SOS notifications connected', timestamp: new Date().toISOString() }));
+      wss.emit('connection', ws, req);
+    });
+  } catch {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+  }
+});
+
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30000);
+heartbeat.unref();
+
 await initDatabase();
-server.listen(port,()=>console.log(`SOS server listening on http://localhost:${port} with WebSocket notifications at /ws`));
+initFirebaseAdmin();
+await ensurePermanentResponder();
+
+server.listen(port, () => console.log(`SOS server listening on http://localhost:${port} with WebSocket notifications at /ws`));

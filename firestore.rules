@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Emergency incidents collection
+    match /incidents/{incidentId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if true;
+    }
+
+    // Permanent responder identity and device tokens
+    match /emergency_responders/{responderId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}
