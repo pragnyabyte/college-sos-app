@@ -57,7 +57,7 @@ try {
   const raw = safeStorage.get('sos-user');
   if (raw) {
     const parsed = JSON.parse(raw);
-    if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001')) {
+    if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001' || parsed.id === '250131' || parsed.regdNo === '250131')) {
       safeStorage.clearSession();
     } else {
       initialUser = parsed;
@@ -181,7 +181,7 @@ const roleLabel = r => ({
 function isResponderUser(u) {
   if (!u) return false;
   const r = String(u.role || '').toUpperCase();
-  return r === 'RESPONDER' || u.id === '250131';
+  return r === 'RESPONDER' || u.id === 'RESP-1111';
 }
 
 function checkIncidentQueryParam() {
@@ -742,11 +742,17 @@ function login() {
     regdInput.value = '';
     regdInput.defaultValue = '';
 
-    // Active anti-autofill wiper: unconditionally purge any browser-injected RESP-001
+    let userInteractedWithRegd = false;
+
+    // Active anti-autofill wiper: unconditionally purge browser-injected default responder IDs before user input
     const purgeAutofill = () => {
+      if (userInteractedWithRegd) return;
       const el = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
-      if (el && (el.value.toUpperCase() === 'RESP-001' || (!el.matches(':focus') && el.value.toUpperCase() === 'RESP-001'))) {
-        el.value = '';
+      if (el && !el.matches(':focus')) {
+        const val = el.value.toUpperCase().trim();
+        if (val === 'RESP-001' || val === '250131' || val === 'RESP-1111') {
+          el.value = '';
+        }
       }
     };
 
@@ -759,11 +765,11 @@ function login() {
     setTimeout(purgeAutofill, 600);
     setTimeout(purgeAutofill, 1200);
 
-    // If browser auto-injected RESP-001 while unfocused
-    regdInput.addEventListener('change', () => {
-      if (!regdInput.matches(':focus') && regdInput.value.toUpperCase() === 'RESP-001') {
-        regdInput.value = '';
-      }
+    // Track user input so manual typing is never cleared on blur
+    ['input', 'keydown', 'keypress', 'paste'].forEach(evt => {
+      regdInput.addEventListener(evt, () => {
+        userInteractedWithRegd = true;
+      }, { passive: true });
     });
 
     // Ensure readonly is removed on focus / click / touch
@@ -1063,8 +1069,18 @@ async function handleLogin(formEl) {
 
   const isResp = role === 'RESPONDER';
   if (isResp) {
+    if (!regdNo && !pin) {
+      showLoginError('Registration / ID No. and Responder PIN are required.');
+      regdInput?.focus();
+      return;
+    }
+    if (!regdNo) {
+      showLoginError('Registration / ID No. is required.');
+      regdInput?.focus();
+      return;
+    }
     if (!pin) {
-      showLoginError('Responder PIN is required for emergency responder authentication.');
+      showLoginError('Responder PIN is required.');
       pinInput?.focus();
       return;
     }
@@ -1073,8 +1089,8 @@ async function handleLogin(formEl) {
     // - If incorrect Registration Number, do NOT clear or reset the entire screen/form.
     // - Keep the page, layout, entered PIN, buttons, and all other UI elements unchanged.
     // - Only clear/vacate the incorrect Registration Number field.
-    // - Show a clear error message: "Invalid Registration Number".
-    if (regdNo !== '250131') {
+    // - Show a small, clear error message: "Invalid Registration Number".
+    if (regdNo !== 'RESP-1111') {
       showLoginError('Invalid Registration Number');
       if (regdInput) {
         regdInput.value = '';
@@ -1087,7 +1103,7 @@ async function handleLogin(formEl) {
     // - If incorrect PIN, do NOT clear or reset the entire screen/form.
     // - Keep the page, layout, Registration Number, buttons, and all other UI elements unchanged.
     // - Only clear/vacate the incorrect PIN field.
-    // - Show a clear error message: "Invalid PIN".
+    // - Show a small, clear error message: "Invalid PIN".
     if (pin !== '2611') {
       showLoginError('Invalid PIN');
       if (pinInput) {

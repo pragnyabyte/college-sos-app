@@ -74,7 +74,7 @@ async function run() {
 
   const respRes = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
-    regdNo: '250131',
+    regdNo: 'RESP-1111',
     role: 'RESPONDER',
     pin: '2611'
   });

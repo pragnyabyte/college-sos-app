@@ -9,7 +9,7 @@ let fcmInitialized = false;
 let fcmError = null;
 let hasServiceAccount = false;
 
-export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || '250131';
+export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || 'RESP-1111';
 export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2611';
 
 /**
@@ -80,7 +80,7 @@ export async function ensurePermanentResponder() {
       {
         $set: {
           responderId: RESPONDER_ID,
-          name: 'Campus Emergency Response Unit (250131)',
+          name: 'Campus Emergency Response Unit (RESP-1111)',
           role: 'responder',
           departmentId: 'DEPT_SECURITY',
           active: true,
@@ -95,8 +95,9 @@ export async function ensurePermanentResponder() {
       { upsert: true }
     );
 
-    // Remove legacy RESP-001 responder doc so old credentials cannot be used
+    // Remove legacy responder docs so old credentials cannot be used
     try {
+      await responders.deleteOne({ responderId: '250131' });
       await responders.deleteOne({ responderId: 'RESP-001' });
     } catch {}
 
@@ -107,7 +108,7 @@ export async function ensurePermanentResponder() {
 }
 
 /**
- * Registers or updates a responder device FCM token under RESP-001.
+ * Registers or updates a responder device FCM token under RESP-1111.
  */
 export async function registerResponderDevice({ responderId = RESPONDER_ID, deviceId, fcmToken, userAgent }) {
   if (!deviceId || !fcmToken) {

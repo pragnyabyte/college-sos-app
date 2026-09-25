@@ -60,17 +60,17 @@ async function runTests() {
   assert.ok(!appJs.includes('btnDeleteCard"'), 'Top btnDeleteCard must be completely removed');
   console.log('   ✓ Duplicate reported time box and duplicate top delete button removed; lower fields intact.');
 
-  // 3. Authenticate Responder (250131 / 2611)
-  console.log('\n3. Authenticating Emergency Responder (250131)...');
+  // 3. Authenticate Responder (RESP-1111 / 2611)
+  console.log('\n3. Authenticating Emergency Responder (RESP-1111)...');
   const respLogin = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
-    regdNo: '250131',
+    regdNo: 'RESP-1111',
     role: 'RESPONDER',
     pin: '2611'
   });
   assert.equal(respLogin.status, 200, 'Responder authentication should succeed');
   const respToken = respLogin.data.token;
-  console.log('   ✓ Responder 250131 authenticated');
+  console.log('   ✓ Responder RESP-1111 authenticated');
 
   // 4. Student Submits a Complaint / SOS
   console.log('\n4. Student logs in and submits a new emergency SOS...');

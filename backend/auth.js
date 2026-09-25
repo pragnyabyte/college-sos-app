@@ -42,7 +42,7 @@ export function createSessionUser({ name, regdNo, role, departmentId, isResponde
     return { id: cleanId, name: cleanName, role: cleanRole, departmentId: dept };
 }
 
-export const AUTHORIZED_RESPONDER_ID = '250131';
+export const AUTHORIZED_RESPONDER_ID = 'RESP-1111';
 export const AUTHORIZED_RESPONDER_PIN = '2611';
 
 export async function verifyResponderCredentials(responderId, pin, name) {
@@ -55,7 +55,7 @@ export async function verifyResponderCredentials(responderId, pin, name) {
     const expectedId = process.env.SOS_RESPONDER_ID || AUTHORIZED_RESPONDER_ID;
     const expectedPin = process.env.SOS_RESPONDER_PIN || AUTHORIZED_RESPONDER_PIN;
 
-    // Requirement 2: Registration/ID must be exactly 250131
+    // Requirement: Registration/ID must be exactly RESP-1111
     if (id !== expectedId) {
         throw Object.assign(new Error('Invalid Registration Number'), { status: 401, field: 'registration_number' });
     }
@@ -67,14 +67,14 @@ export async function verifyResponderCredentials(responderId, pin, name) {
         if (doc && doc.pin) dbPin = doc.pin;
     } catch {}
 
-    // Requirement 3: Responder PIN must be exactly 2611
+    // Requirement: Responder PIN must be exactly 2611
     if (cleanPin !== expectedPin && cleanPin !== dbPin) {
         throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
     }
 
     return {
         id,
-        name: name || 'Campus Emergency Response Unit (250131)',
+        name: name || 'Campus Emergency Response Unit (RESP-1111)',
         role: 'RESPONDER',
         departmentId: 'DEPT_SECURITY'
     };
@@ -112,6 +112,6 @@ export const isAdmin = (u) => {
 
 export const isResponder = (u) => {
     const r = String(u?.role || '').toUpperCase();
-    return r === 'RESPONDER' || u?.id === '250131';
+    return r === 'RESPONDER' || u?.id === 'RESP-1111';
 };
 

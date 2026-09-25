@@ -44,14 +44,14 @@ async function runScenario() {
   assert.equal(stuCLogin.data.user.role, 'STUDENT');
   console.log('   ✓ Student C authenticated (Role: STUDENT, Token issued)');
 
-  // Step 4 & 5: Responder 250131 authenticates and registers device
-  console.log('\n4. Responder 250131 authenticates with responder credentials...');
-  const respLogin = await req('/api/auth/responder-login', 'POST', { responderId: '250131', pin: '2611' });
+  // Step 4 & 5: Responder RESP-1111 authenticates and registers device
+  console.log('\n4. Responder RESP-1111 authenticates with responder credentials...');
+  const respLogin = await req('/api/auth/responder-login', 'POST', { responderId: 'RESP-1111', pin: '2611' });
   assert.equal(respLogin.status, 200, 'Responder login should succeed');
-  assert.equal(respLogin.data.user.id, '250131');
+  assert.equal(respLogin.data.user.id, 'RESP-1111');
   assert.equal(respLogin.data.user.role, 'RESPONDER');
   const respToken = respLogin.data.token;
-  console.log('   ✓ Responder 250131 authenticated');
+  console.log('   ✓ Responder RESP-1111 authenticated');
 
   console.log('\n5. Responder Phone registers FCM device token...');
   const phoneA_DeviceId = 'phone-android-galaxy-s24';
@@ -87,7 +87,7 @@ async function runScenario() {
   // Let's verify device registration remains active in database!
   console.log('   ✓ Website session ended. Verifying device token persistence in database...');
   // Re-verify devices using administrative check
-  const verifyPersisted = await req('/api/auth/responder-login', 'POST', { responderId: '250131', pin: '2611' });
+  const verifyPersisted = await req('/api/auth/responder-login', 'POST', { responderId: 'RESP-1111', pin: '2611' });
   const checkDev = await req('/api/responder/devices', 'GET', null, verifyPersisted.data.token);
   const stillHasPhoneA = checkDev.data.some(d => d.deviceId === phoneA_DeviceId && d.active);
   assert.ok(stillHasPhoneA, 'Phone A MUST remain registered in database after logout!');
@@ -124,12 +124,12 @@ async function runScenario() {
   console.log(`   ✓ Incident fetched accurately: Student ${getSosA.data.student_name} at ${getSosA.data.location.building}`);
 
   // Responder accepts SOS
-  console.log('   ✓ Responder RESP-001 accepts the SOS...');
+  console.log('   ✓ Responder RESP-1111 accepts the SOS...');
   const acceptSosA = await req(`/api/sos/${sosA_Id}/accept`, 'POST', {}, respToken);
   assert.equal(acceptSosA.status, 200);
   assert.equal(acceptSosA.data.status, 'ACCEPTED');
-  assert.equal(acceptSosA.data.accepted_by, '250131');
-  console.log('   ✓ SOS status updated to ACCEPTED by 250131');
+  assert.equal(acceptSosA.data.accepted_by, 'RESP-1111');
+  console.log('   ✓ SOS status updated to ACCEPTED by RESP-1111');
 
   // Step 15 & 16: Student B sends another SOS
   console.log('\n15-16. Student B sends another SOS (Fire emergency)...');

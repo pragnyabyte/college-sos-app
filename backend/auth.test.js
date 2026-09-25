@@ -60,14 +60,18 @@ test('createSessionUser rejects email addresses and enforces Registration/Roll/I
     }
 });
 
-test('verifyResponderCredentials accepts only authorized credentials 250131 and 2611', async () => {
+test('verifyResponderCredentials accepts only authorized credentials RESP-1111 and 2611', async () => {
     // Correct credentials
-    const responder = await verifyResponderCredentials('250131', '2611', 'Campus Emergency Response Unit');
-    assert.equal(responder.id, '250131');
+    const responder = await verifyResponderCredentials('RESP-1111', '2611', 'Campus Emergency Response Unit');
+    assert.equal(responder.id, 'RESP-1111');
     assert.equal(responder.role, 'RESPONDER');
     assert.equal(responder.departmentId, 'DEPT_SECURITY');
 
-    // Reject wrong ID
+    // Reject old / wrong ID (250131 and RESP-001)
+    await assert.rejects(
+        () => verifyResponderCredentials('250131', '2611'),
+        /Invalid Registration Number/
+    );
     await assert.rejects(
         () => verifyResponderCredentials('RESP-001', '2611'),
         /Invalid Registration Number/
@@ -75,12 +79,12 @@ test('verifyResponderCredentials accepts only authorized credentials 250131 and 
 
     // Reject wrong PIN
     await assert.rejects(
-        () => verifyResponderCredentials('250131', 'RESP-911'),
+        () => verifyResponderCredentials('RESP-1111', 'RESP-911'),
         /Invalid PIN/
     );
 
     await assert.rejects(
-        () => verifyResponderCredentials('250131', '9999'),
+        () => verifyResponderCredentials('RESP-1111', '9999'),
         /Invalid PIN/
     );
 
@@ -91,10 +95,11 @@ test('verifyResponderCredentials accepts only authorized credentials 250131 and 
     );
 });
 
-test('isResponder recognizes 250131 and RESPONDER role, rejects old RESP-001', async () => {
-    assert.equal(isResponder({ id: '250131', role: 'RESPONDER' }), true);
-    assert.equal(isResponder({ id: '250131', role: 'STUDENT' }), true);
+test('isResponder recognizes RESP-1111 and RESPONDER role, rejects old IDs', async () => {
+    assert.equal(isResponder({ id: 'RESP-1111', role: 'RESPONDER' }), true);
+    assert.equal(isResponder({ id: 'RESP-1111', role: 'STUDENT' }), true);
     assert.equal(isResponder({ id: 'ANY_ID', role: 'RESPONDER' }), true);
+    assert.equal(isResponder({ id: '250131', role: 'STUDENT' }), false);
     assert.equal(isResponder({ id: 'RESP-001', role: 'STUDENT' }), false);
     await closeDatabase();
 });

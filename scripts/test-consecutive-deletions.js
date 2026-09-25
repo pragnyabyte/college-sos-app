@@ -21,11 +21,11 @@ async function run() {
   console.log('TESTING MULTIPLE CONSECUTIVE DELETIONS WITHOUT PAGE REFRESH');
   console.log('===============================================================\n');
 
-  // 1. Authenticate Responder (250131)
-  console.log('1. Authenticating Emergency Responder (250131)...');
+  // 1. Authenticate Responder (RESP-1111)
+  console.log('1. Authenticating Emergency Responder (RESP-1111)...');
   const respLogin = await req('/api/auth/login', 'POST', {
     name: 'Emergency Response Unit',
-    regdNo: '250131',
+    regdNo: 'RESP-1111',
     role: 'RESPONDER',
     pin: '2611'
   });
