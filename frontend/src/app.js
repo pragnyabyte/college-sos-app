@@ -172,7 +172,6 @@ const message = s => ({
 const status = s => `<span class="status s-${String(s).toLowerCase()}">● ${pretty(s)}</span>`;
 const roleLabel = r => ({
   STUDENT: 'Student',
-  TEACHER: 'Teacher',
   ADMIN: 'Admin',
   INSTITUTE_ADMIN: 'Admin',
   RESPONDER: 'Emergency Responder'
@@ -655,7 +654,7 @@ function clearLoginError() {
   }
 }
 
-// ONE UNIFIED SIGN IN SCREEN FOR ALL USERS (Students, Responders, Teachers, Admins)
+// ONE UNIFIED SIGN IN SCREEN FOR ALL USERS (Students, Responders)
 function login() {
   app.innerHTML = `<div class="login">
     <section>
@@ -683,7 +682,6 @@ function login() {
         <select name="role" id="role" required>
           <option value="STUDENT">Student</option>
           <option value="RESPONDER">Emergency Responder</option>
-          <option value="TEACHER">Teacher</option>
         </select>
       </label>
       <div id="pinGroup" style="display:none">
@@ -845,10 +843,6 @@ function board() {
     eyebrow = `EMERGENCY RESPONDER CONSOLE (${esc(state.user?.id || 'ACTIVE')})`;
     title = 'Emergency Response Operations';
     desc = 'Emergency responder console receiving real-time SOS push alerts from all students.';
-  } else if (state.user?.role === 'TEACHER') {
-    eyebrow = 'TEACHER DASHBOARD';
-    title = 'Teacher Incident Board';
-    desc = 'Live emergency requests and alerts within teacher supervision scope.';
   } else if (['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user?.role).toUpperCase())) {
     eyebrow = 'ADMIN DASHBOARD';
     title = 'Campus Emergency Operations';
@@ -907,7 +901,7 @@ function board() {
 }
 
 function cards(items) {
-  const canDelete = isResponderUser(state.user) || ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN', 'TEACHER'].includes(String(state.user?.role).toUpperCase());
+  const canDelete = isResponderUser(state.user) || ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user?.role).toUpperCase());
   return items.length ? items.map(i => {
     const c = category(i.category_id);
     const reportedTime = formatReportedTime(getIncidentCreatedAt(i));
@@ -1064,6 +1058,11 @@ async function handleLogin(formEl) {
       regdInput.value = '';
       regdInput.focus();
     }
+    return;
+  }
+
+  if (role !== 'STUDENT' && role !== 'RESPONDER') {
+    showLoginError('Invalid role. Please select Student or Emergency Responder.');
     return;
   }
 

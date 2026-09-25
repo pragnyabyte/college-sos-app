@@ -25,13 +25,20 @@ test('createSessionUser requires Name and Regd. No.', () => {
     assert.throws(() => createSessionUser({ name: 'User', regdNo: 'REG-1', role: 'UNKNOWN_ROLE' }), /Invalid role/);
 });
 
+test('createSessionUser rejects TEACHER role as unsupported', () => {
+    assert.throws(
+        () => createSessionUser({ name: 'Prof. Sharma', regdNo: 'EMP-900', role: 'TEACHER' }),
+        /Invalid role specified\. Teacher role is not supported\./
+    );
+});
+
 test('issueToken and authenticate round-trips correctly for created users', () => {
-    const u = createSessionUser({ name: 'Prof. Sharma', regdNo: 'EMP-900', role: 'TEACHER' });
+    const u = createSessionUser({ name: 'Admin User', regdNo: 'EMP-900', role: 'ADMIN' });
     const token = issueToken(u);
     const authed = authenticate({ headers: { authorization: `Bearer ${token}` } });
-    assert.equal(authed.name, 'Prof. Sharma');
+    assert.equal(authed.name, 'Admin User');
     assert.equal(authed.id, 'EMP-900');
-    assert.equal(authed.role, 'TEACHER');
+    assert.equal(authed.role, 'ADMIN');
 });
 
 test('isAdmin returns true for INSTITUTE_ADMIN, SUPER_ADMIN, and ADMIN', () => {
@@ -39,7 +46,6 @@ test('isAdmin returns true for INSTITUTE_ADMIN, SUPER_ADMIN, and ADMIN', () => {
     assert.equal(isAdmin({ role: 'SUPER_ADMIN' }), true);
     assert.equal(isAdmin({ role: 'ADMIN' }), true);
     assert.equal(isAdmin({ role: 'STUDENT' }), false);
-    assert.equal(isAdmin({ role: 'TEACHER' }), false);
 });
 
 test('createSessionUser rejects email addresses and enforces Registration/Roll/ID format', () => {

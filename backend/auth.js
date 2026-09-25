@@ -3,12 +3,12 @@ import { getDb } from './db.js';
 
 const secret = process.env.SOS_SESSION_SECRET || 'development-only-change-me';
 
-export const ROLES = ['STUDENT', 'INSTITUTE_ADMIN', 'ADMIN', 'TEACHER', 'DEPARTMENT_HEAD', 'RESPONDER'];
+export const ROLES = ['STUDENT', 'INSTITUTE_ADMIN', 'ADMIN', 'DEPARTMENT_HEAD', 'RESPONDER'];
 export const demoUsers = [];
 
 export function getDefaultDepartment(role) {
     const r = String(role || '').toUpperCase();
-    if (r === 'INSTITUTE_ADMIN' || r === 'ADMIN' || r === 'DEPARTMENT_HEAD' || r === 'TEACHER') return 'DEPT_ADMIN';
+    if (r === 'INSTITUTE_ADMIN' || r === 'ADMIN' || r === 'DEPARTMENT_HEAD') return 'DEPT_ADMIN';
     if (r === 'RESPONDER') return 'DEPT_SECURITY';
     return null;
 }
@@ -31,7 +31,9 @@ export function createSessionUser({ name, regdNo, role, departmentId, isResponde
         throw Object.assign(new Error('Invalid Registration / Roll / ID No. Format must be an ID, Roll No., or Regd. No.'), { status: 400 });
     }
 
-    if (!ROLES.includes(cleanRole)) throw Object.assign(new Error('Invalid role specified'), { status: 400 });
+    if (cleanRole === 'TEACHER' || !ROLES.includes(cleanRole)) {
+        throw Object.assign(new Error('Invalid role specified. Teacher role is not supported.'), { status: 400 });
+    }
 
     // Standard user login cannot claim the RESPONDER role
     if (cleanRole === 'RESPONDER' && !isResponderAuth) {

@@ -90,6 +90,13 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: 'Email addresses are not accepted. Please enter a valid Registration / ID No.' });
       }
 
+      if (role === 'TEACHER') {
+        return json(res, 400, { error: 'Invalid role. Teacher role is not supported.' });
+      }
+      if (role !== 'STUDENT' && role !== 'RESPONDER') {
+        return json(res, 400, { error: 'Invalid role. Only Student and Emergency Responder roles are supported.' });
+      }
+
       let u;
       if (role === 'RESPONDER') {
         const pin = b.pin || b.password;
@@ -294,7 +301,7 @@ function allowed(user, event) {
   if (!user) return false;
   if (isAdmin(user) || isResponder(user)) return true;
   if (user.role === 'STUDENT') return event.studentId === user.id;
-  if (['RESPONDER', 'DEPARTMENT_HEAD', 'TEACHER'].includes(user.role)) {
+  if (['RESPONDER', 'DEPARTMENT_HEAD'].includes(user.role)) {
     if (!user.departmentId || user.departmentId === 'DEPT_ADMIN' || user.departmentId === 'ALL') return true;
     return event.assignedDepartments && event.assignedDepartments.includes(user.departmentId);
   }
