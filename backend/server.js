@@ -82,18 +82,22 @@ const server = createServer(async (req, res) => {
       const regd = String(b.regdNo || b.userId || b.id || '').trim();
       const role = String(b.role || 'STUDENT').trim().toUpperCase();
 
+      if (!regd) {
+        return json(res, 400, { error: 'Registration / ID No. is required.' });
+      }
+
       if (regd.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regd)) {
-        return json(res, 400, { error: 'Email addresses are not accepted. Please enter a valid Registration / Roll / ID No.' });
+        return json(res, 400, { error: 'Email addresses are not accepted. Please enter a valid Registration / ID No.' });
       }
 
       let u;
-      if (regd.toUpperCase() === 'RESP-001' || role === 'RESPONDER') {
+      if (role === 'RESPONDER') {
         const pin = b.pin || b.password;
-        u = await verifyResponderCredentials('RESP-001', pin);
+        u = await verifyResponderCredentials(regd, pin, b.name);
       } else {
         u = createSessionUser({
           name: b.name || b.userId || 'Student',
-          regdNo: b.regdNo || b.userId || b.id || 'REG-001',
+          regdNo: regd,
           role: b.role || 'STUDENT',
           departmentId: b.departmentId
         });
@@ -103,7 +107,9 @@ const server = createServer(async (req, res) => {
 
     if (path === '/api/auth/responder-login' && req.method === 'POST') {
       const b = await body(req);
-      const u = await verifyResponderCredentials(b.responderId || 'RESP-001', b.pin || b.password);
+      const id = String(b.responderId || b.regdNo || b.id || '').trim();
+      if (!id) return json(res, 400, { error: 'Responder ID is required' });
+      const u = await verifyResponderCredentials(id, b.pin || b.password, b.name);
       return json(res, 200, { token: issueToken(u), user: u });
     }
 
@@ -177,9 +183,9 @@ const server = createServer(async (req, res) => {
       if (path === '/api/responder/device' && req.method === 'POST') {
         if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
         const b = await body(req);
-        console.log(`[SOS:Backend] Registering device token for RESP-001 (Device ID: ${b.deviceId})`);
+        console.log(`[SOS:Backend] Registering device token for ${u.id} (Device ID: ${b.deviceId})`);
         const reg = await registerResponderDevice({
-          responderId: 'RESP-001',
+          responderId: u.id,
           deviceId: b.deviceId,
           fcmToken: b.fcmToken,
           userAgent: req.headers['user-agent']
@@ -190,13 +196,13 @@ const server = createServer(async (req, res) => {
       if (path.startsWith('/api/responder/device/') && req.method === 'DELETE') {
         if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
         const devId = path.split('/')[4];
-        await unregisterResponderDevice(devId, 'RESP-001');
+        await unregisterResponderDevice(devId, u.id);
         return json(res, 200, { success: true });
       }
 
       if (path === '/api/responder/devices' && req.method === 'GET') {
         if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        return json(res, 200, await getActiveResponderDevices('RESP-001'));
+        return json(res, 200, await getActiveResponderDevices(u.id));
       }
 
       if (path === '/api/responder/test-alert' && req.method === 'POST') {
@@ -209,7 +215,7 @@ const server = createServer(async (req, res) => {
           student_name: 'Test Emergency Drill',
           student_id: 'DRILL-01',
           location: { building: 'Command Center', floor: '1st Floor', room: 'Station 1' },
-          description: 'Emergency test notification trigger for RESP-001.',
+          description: `Emergency test notification trigger for ${u.id}.`,
           created_at: new Date().toISOString()
         };
         broadcast(eventPayload('sos.created', testIncident));
@@ -277,7 +283,7 @@ const server = createServer(async (req, res) => {
 
     return json(res, 404, { error: 'Not found' });
   } catch (e) {
-    json(res, e.status || 500, { error: e.status ? e.message : 'Internal server error', incidentId: e.incidentId });
+    json(res, e.status || 500, { error: e.status ? e.message : 'Internal server error', field: e.field, incidentId: e.incidentId });
   }
 });
 

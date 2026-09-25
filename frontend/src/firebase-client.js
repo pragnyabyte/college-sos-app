@@ -107,7 +107,7 @@ export async function setupResponderFCM({ vapidKey, onMessageReceived, onTokenRe
 }
 
 /**
- * Syncs the FCM token with the backend under permanent responder RESP-001.
+ * Syncs the FCM token with the backend for the authenticated emergency responder.
  */
 export async function syncResponderDeviceWithBackend(token, authToken) {
   if (!token) return;

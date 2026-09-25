@@ -36,7 +36,7 @@ async function run() {
 
   // Must have ONLY: Delete SOS Alert, Are you sure you want to delete this SOS alert?, Incident ID, Cancel, Delete
   assert.ok(appJs.includes('Delete SOS Alert'), 'Popup must have "Delete SOS Alert"');
-  assert.ok(appJs.includes('Are you sure you want to delete this SOS alert?'), 'Popup must have confirmation question');
+  assert.ok(appJs.includes('Are you sure you want to permanently delete this incident?') || appJs.includes('Are you sure you want to delete this SOS alert?'), 'Popup must have confirmation question');
   assert.ok(appJs.includes('Incident ID'), 'Popup must have "Incident ID"');
   assert.ok(appJs.includes('Cancel'), 'Popup must have "Cancel"');
   assert.ok(appJs.includes('confirm-delete'), 'Popup must have "Delete" button');
@@ -74,9 +74,9 @@ async function run() {
 
   const respRes = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
-    regdNo: 'RESP-001',
+    regdNo: '250131',
     role: 'RESPONDER',
-    pin: 'RESP-911'
+    pin: '2611'
   });
   assert.equal(respRes.status, 200, 'Responder login must succeed');
   const respToken = respRes.data.token;

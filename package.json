@@ -5,7 +5,7 @@
     "type": "module",
     "scripts": {
         "build": "vite build",
-        "dev:server": "node --watch backend/server.js",
+        "dev:server": "node --watch --watch-path=backend backend/server.js",
         "test": "node --test backend/*.test.js",
         "dev:web": "vite",
         "start": "node backend/server.js",

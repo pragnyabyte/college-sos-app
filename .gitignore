@@ -5,3 +5,4 @@ data/
 *.log
 backups/
 serviceAccountKey.json
+.firebase/

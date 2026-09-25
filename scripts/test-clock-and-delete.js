@@ -36,7 +36,7 @@ async function runTests() {
   console.log('\n2. Checking Frontend Implementation for SOS Alert Delete Option...');
   assert.ok(appJs.includes('btnDeleteCard'), 'Must have Delete button on alert cards');
   assert.ok(appJs.includes('data-delete-sos'), 'Must bind data-delete-sos attribute');
-  assert.ok(appJs.includes('Are you sure you want to delete this SOS alert?'), 'Must have confirmation question');
+  assert.ok(appJs.includes('Are you sure you want to permanently delete this incident?') || appJs.includes('Are you sure you want to delete this SOS alert?'), 'Must have confirmation question');
   assert.ok(appJs.includes('btnModalCancel'), 'Must have Cancel option');
   assert.ok(appJs.includes('btnModalDelete'), 'Must have Delete confirmation action');
   assert.ok(appJs.includes('deleteIncidentFromFirestore'), 'Must call Firestore deletion');
@@ -69,17 +69,17 @@ async function runTests() {
   assert.equal(studentDelAttempt.status, 403, 'Student should be rejected with 403 Forbidden');
   console.log('   ✓ Student deletion rejected with 403 Forbidden as expected');
 
-  // 5. Test Authorized Responder Authentication (RESP-001 / RESP-911)
-  console.log('\n5. Authenticating authorized Emergency Responder (RESP-001)...');
+  // 5. Test Authorized Responder Authentication (250131 / 2611)
+  console.log('\n5. Authenticating authorized Emergency Responder (250131)...');
   const respLogin = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
-    regdNo: 'RESP-001',
+    regdNo: '250131',
     role: 'RESPONDER',
-    pin: 'RESP-911'
+    pin: '2611'
   });
   assert.equal(respLogin.status, 200, 'Responder authentication should succeed');
   const respToken = respLogin.data.token;
-  console.log('   ✓ Emergency Responder RESP-001 authenticated');
+  console.log('   ✓ Emergency Responder 250131 authenticated');
 
   // 6. Verify Incident Exists in Database Before Deletion
   console.log('\n6. Checking incident exists before deletion...');

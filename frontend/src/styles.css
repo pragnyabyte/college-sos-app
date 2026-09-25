@@ -828,6 +828,35 @@ nav button.on:after {
   margin-left: 15px;
 }
 
+.loginToast {
+  position: static !important;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 1.1rem !important;
+  background: #ff4d4f24;
+  border: 1px solid #ff4d4f66;
+  color: #ff7875;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 500;
+  box-sizing: border-box;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.loginToast button {
+  background: none;
+  border: none;
+  color: #ff7875;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: 10px;
+  line-height: 1;
+}
+
 footer {
   text-align: center;
   padding: 25px;
@@ -914,6 +943,56 @@ footer {
   display: block;
   font-weight: 700;
   margin: 16px 0;
+}
+
+.pinWrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.pinWrapper input {
+  width: 100%;
+  padding-right: 44px !important;
+}
+
+.btnTogglePin {
+  position: absolute;
+  right: 8px;
+  top: calc(50% + 3.5px);
+  transform: translateY(-50%);
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 6px !important;
+  margin: 0 !important;
+  width: 32px !important;
+  min-height: 32px !important;
+  height: 32px !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #64748b;
+  border-radius: 6px;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  z-index: 3;
+}
+
+.btnTogglePin:hover {
+  color: #0f172a;
+  background-color: #f1f5f9 !important;
+}
+
+.btnTogglePin:focus-visible {
+  outline: 2px solid #94a3b8;
+  outline-offset: 1px;
+}
+
+.btnTogglePin svg {
+  display: block;
+  pointer-events: none;
 }
 
 .login form .primary {
@@ -1284,7 +1363,7 @@ footer {
 }
 
 /* =========================================
-   Emergency Responder RESP-001 & FCM Styles
+   Emergency Responder & FCM Styles
    ========================================= */
 .deviceBadge {
   display: inline-flex;
@@ -1857,4 +1936,18 @@ footer {
 
 .btnModalDelete:active {
   transform: translateY(1px);
+}
+
+/* Anti-autofill detection and override for registration field */
+@keyframes onAutofillDetect {
+  from { opacity: 0.999; }
+  to { opacity: 1; }
+}
+
+#regdNo:-webkit-autofill,
+#regdNo:-webkit-autofill:hover,
+#regdNo:-webkit-autofill:focus {
+  animation-name: onAutofillDetect;
+  -webkit-text-fill-color: #0f172a !important;
+  transition: background-color 5000s ease-in-out 0s;
 }

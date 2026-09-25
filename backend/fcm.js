@@ -9,7 +9,8 @@ let fcmInitialized = false;
 let fcmError = null;
 let hasServiceAccount = false;
 
-export const RESPONDER_ID = 'RESP-001';
+export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || '250131';
+export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2611';
 
 /**
  * Initializes Firebase Admin SDK safely without crashing if credentials are not yet supplied.
@@ -72,25 +73,34 @@ export async function ensurePermanentResponder() {
   try {
     const db = await getDb();
     const responders = db.collection('emergency_responders');
-    const existing = await responders.findOne({ responderId: RESPONDER_ID });
-    const pin = process.env.SOS_RESPONDER_PIN || 'RESP-911';
+    const pin = process.env.SOS_RESPONDER_PIN || DEFAULT_RESPONDER_PIN;
 
-    if (!existing) {
-      await responders.insertOne({
-        responderId: RESPONDER_ID,
-        name: 'Campus Emergency Response Unit (RESP-001)',
-        role: 'responder',
-        departmentId: 'DEPT_SECURITY',
-        active: true,
-        pin,
-        devices: {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-      console.log(`[FCM] Permanent responder ${RESPONDER_ID} created in database.`);
-    } else if (!existing.pin) {
-      await responders.updateOne({ responderId: RESPONDER_ID }, { $set: { pin, active: true } });
-    }
+    await responders.updateOne(
+      { responderId: RESPONDER_ID },
+      {
+        $set: {
+          responderId: RESPONDER_ID,
+          name: 'Campus Emergency Response Unit (250131)',
+          role: 'responder',
+          departmentId: 'DEPT_SECURITY',
+          active: true,
+          pin,
+          updatedAt: new Date().toISOString()
+        },
+        $setOnInsert: {
+          devices: {},
+          createdAt: new Date().toISOString()
+        }
+      },
+      { upsert: true }
+    );
+
+    // Remove legacy RESP-001 responder doc so old credentials cannot be used
+    try {
+      await responders.deleteOne({ responderId: 'RESP-001' });
+    } catch {}
+
+    console.log(`[FCM] Permanent responder ${RESPONDER_ID} verified/updated in database.`);
   } catch (e) {
     console.error('[FCM] Error ensuring permanent responder:', e.message);
   }
@@ -108,11 +118,12 @@ export async function registerResponderDevice({ responderId = RESPONDER_ID, devi
   const responders = db.collection('emergency_responders');
   const now = new Date().toISOString();
 
-  // Atomically upsert the device into RESP-001 devices map
+  // Atomically upsert the device into responder devices map
   await responders.findOneAndUpdate(
     { responderId },
     {
       $set: {
+        responderId,
         [`devices.${deviceId}`]: {
           deviceId,
           fcmToken,
@@ -121,9 +132,16 @@ export async function registerResponderDevice({ responderId = RESPONDER_ID, devi
           lastUpdated: now
         },
         updatedAt: now
+      },
+      $setOnInsert: {
+        name: `Emergency Responder (${responderId})`,
+        role: 'responder',
+        departmentId: 'DEPT_SECURITY',
+        active: true,
+        createdAt: now
       }
     },
-    { returnDocument: 'after' }
+    { upsert: true, returnDocument: 'after' }
   );
 
   return {
@@ -153,7 +171,7 @@ export async function unregisterResponderDevice(deviceId, responderId = RESPONDE
 }
 
 /**
- * Gets all active registered devices for RESP-001.
+ * Gets all active registered devices for a responder.
  */
 export async function getActiveResponderDevices(responderId = RESPONDER_ID) {
   const db = await getDb();
@@ -163,12 +181,20 @@ export async function getActiveResponderDevices(responderId = RESPONDER_ID) {
 }
 
 /**
- * Sends FCM push notification to all active registered devices of RESP-001.
+ * Sends FCM push notification to all active registered responder devices.
  */
 export async function sendEmergencySosNotification(incident) {
-  const devices = await getActiveResponderDevices(RESPONDER_ID);
+  const db = await getDb();
+  let devices = [];
+  try {
+    const allResponders = await db.collection('emergency_responders').find({ active: { $ne: false } }).toArray();
+    devices = allResponders.flatMap(r => r.devices ? Object.values(r.devices).filter(d => d && d.active && d.fcmToken) : []);
+  } catch {}
   if (!devices || devices.length === 0) {
-    console.log(`[FCM] No active registered devices for ${RESPONDER_ID}. Skipping push.`);
+    devices = await getActiveResponderDevices(RESPONDER_ID);
+  }
+  if (!devices || devices.length === 0) {
+    console.log(`[FCM] No active registered responder devices. Skipping push.`);
     return { deliveredCount: 0, totalDevices: 0 };
   }
 

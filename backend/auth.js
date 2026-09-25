@@ -42,28 +42,39 @@ export function createSessionUser({ name, regdNo, role, departmentId, isResponde
     return { id: cleanId, name: cleanName, role: cleanRole, departmentId: dept };
 }
 
-export async function verifyResponderCredentials(responderId, pin) {
+export const AUTHORIZED_RESPONDER_ID = '250131';
+export const AUTHORIZED_RESPONDER_PIN = '2611';
+
+export async function verifyResponderCredentials(responderId, pin, name) {
     const id = String(responderId || '').trim();
     const cleanPin = String(pin || '').trim();
-    if (id !== 'RESP-001') {
-        throw Object.assign(new Error('Invalid responder identifier'), { status: 401 });
+    if (!id) {
+        throw Object.assign(new Error('Registration / ID No. is required'), { status: 400 });
     }
 
-    const expectedPin = process.env.SOS_RESPONDER_PIN || 'RESP-911';
+    const expectedId = process.env.SOS_RESPONDER_ID || AUTHORIZED_RESPONDER_ID;
+    const expectedPin = process.env.SOS_RESPONDER_PIN || AUTHORIZED_RESPONDER_PIN;
+
+    // Requirement 2: Registration/ID must be exactly 250131
+    if (id !== expectedId) {
+        throw Object.assign(new Error('Invalid Registration Number'), { status: 401, field: 'registration_number' });
+    }
+
     let dbPin = expectedPin;
     try {
         const db = await getDb();
-        const doc = await db.collection('emergency_responders').findOne({ responderId: 'RESP-001' });
+        const doc = await db.collection('emergency_responders').findOne({ responderId: id });
         if (doc && doc.pin) dbPin = doc.pin;
     } catch {}
 
+    // Requirement 3: Responder PIN must be exactly 2611
     if (cleanPin !== expectedPin && cleanPin !== dbPin) {
-        throw Object.assign(new Error('Invalid responder access key / PIN'), { status: 401 });
+        throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
     }
 
     return {
-        id: 'RESP-001',
-        name: 'Campus Emergency Response Unit (RESP-001)',
+        id,
+        name: name || 'Campus Emergency Response Unit (250131)',
         role: 'RESPONDER',
         departmentId: 'DEPT_SECURITY'
     };
@@ -101,6 +112,6 @@ export const isAdmin = (u) => {
 
 export const isResponder = (u) => {
     const r = String(u?.role || '').toUpperCase();
-    return r === 'RESPONDER' || u?.id === 'RESP-001';
+    return r === 'RESPONDER' || u?.id === '250131';
 };
 

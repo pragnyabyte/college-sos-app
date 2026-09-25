@@ -45,6 +45,8 @@ const safeStorage = {
     try {
       sessionStorage.removeItem('sos-user');
       sessionStorage.removeItem('sos-token');
+      localStorage.removeItem('sos-user');
+      localStorage.removeItem('sos-token');
       // DO NOT delete sos-device-id or sos-fcm-token! Device registration persists!
     } catch {}
   }
@@ -53,7 +55,14 @@ const safeStorage = {
 let initialUser = null;
 try {
   const raw = safeStorage.get('sos-user');
-  if (raw) initialUser = JSON.parse(raw);
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001')) {
+      safeStorage.clearSession();
+    } else {
+      initialUser = parsed;
+    }
+  }
 } catch {}
 
 const state = {
@@ -120,6 +129,9 @@ if (sosBroadcast) {
       const deletedMongoId = event.data?._id || incident?._id;
       if (deletedId || deletedMongoId) {
         console.log('%c[SOS:RealTime] Incident deletion received across tabs: ' + (deletedId || deletedMongoId), 'color:#ef4444;font-weight:bold');
+        if (state.deletePrompt && ((deletedId && (state.deletePrompt.id === deletedId || state.deletePrompt._id === deletedId)) || (deletedMongoId && (state.deletePrompt._id === deletedMongoId || state.deletePrompt.id === deletedMongoId)))) {
+          state.deletePrompt = null;
+        }
         state.incidents = state.incidents.filter(x => (deletedId ? x.id !== deletedId : true) && (deletedMongoId ? x._id !== deletedMongoId : true));
         if (state.selected && ((deletedId && state.selected.id === deletedId) || (deletedMongoId && state.selected._id === deletedMongoId))) state.selected = null;
         if (state.activeAlarm && ((deletedId && state.activeAlarm.id === deletedId) || (deletedMongoId && state.activeAlarm._id === deletedMongoId))) {
@@ -163,13 +175,13 @@ const roleLabel = r => ({
   TEACHER: 'Teacher',
   ADMIN: 'Admin',
   INSTITUTE_ADMIN: 'Admin',
-  RESPONDER: 'Emergency Responder (RESP-001)'
+  RESPONDER: 'Emergency Responder'
 }[String(r).toUpperCase()] || pretty(r));
 
 function isResponderUser(u) {
   if (!u) return false;
   const r = String(u.role || '').toUpperCase();
-  return r === 'RESPONDER' || u.id === 'RESP-001';
+  return r === 'RESPONDER' || u.id === '250131';
 }
 
 function checkIncidentQueryParam() {
@@ -202,6 +214,9 @@ function attachFirestoreListener() {
         const deletedId = incident.id;
         const deletedMongoId = incident._id;
         console.log(`%c[SOS:Firestore] Active incident removed in Firestore: ${deletedId || deletedMongoId}`, 'color:#ef4444;font-weight:bold');
+        if (state.deletePrompt && ((deletedId && (state.deletePrompt.id === deletedId || state.deletePrompt._id === deletedId)) || (deletedMongoId && (state.deletePrompt._id === deletedMongoId || state.deletePrompt.id === deletedMongoId)))) {
+          state.deletePrompt = null;
+        }
         state.incidents = state.incidents.filter(x => (deletedId ? x.id !== deletedId : true) && (deletedMongoId ? x._id !== deletedMongoId : true));
         if (state.selected && ((deletedId && state.selected.id === deletedId) || (deletedMongoId && state.selected._id === deletedMongoId))) state.selected = null;
         if (state.activeAlarm && ((deletedId && state.activeAlarm.id === deletedId) || (deletedMongoId && state.activeAlarm._id === deletedMongoId))) {
@@ -232,6 +247,18 @@ try {
   const saved = sessionStorage.getItem('sos_alerted_ids');
   if (saved) JSON.parse(saved).forEach(id => alertedSosIds.add(id));
 } catch {}
+
+// Persistent deletion tracking to prevent race condition resurrection during background syncing
+const locallyDeletedIds = new Set();
+try {
+  const savedDeleted = sessionStorage.getItem('sos_deleted_ids');
+  if (savedDeleted) JSON.parse(savedDeleted).forEach(id => locallyDeletedIds.add(id));
+} catch {}
+
+function filterDeletedIncidents(items) {
+  if (!Array.isArray(items)) return [];
+  return items.filter(x => !locallyDeletedIds.has(x.id) && (!x._id || !locallyDeletedIds.has(x._id)));
+}
 
 function triggerResponderEmergencyAlert(incident) {
   if (!incident || !incident.id) return;
@@ -313,7 +340,7 @@ async function initResponderPush() {
         state.deviceStatus = 'active';
         if (state.token) {
           await syncResponderDeviceWithBackend(token, state.token);
-          console.log('[FCM] Token synchronized with permanent responder identity RESP-001');
+          console.log(`[FCM] Token synchronized with responder identity ${state.user?.id || ''}`);
         }
         render();
       },
@@ -387,11 +414,13 @@ async function refresh() {
     const isResp = isResponderUser(state.user);
     const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user.role).toUpperCase());
     const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my');
-    if (Array.isArray(incs)) state.incidents = incs;
+    if (Array.isArray(incs)) state.incidents = filterDeletedIncidents(incs);
   } catch (e) {
     // Keep existing incidents
   }
-  render();
+  if (!state.deletePrompt) {
+    render();
+  }
 }
 
 // Server-Sent Events (SSE) stream for reliable live notifications
@@ -418,6 +447,12 @@ function connectSseStream() {
           const deletedId = payload.id;
           const deletedMongoId = payload._id;
           console.log('%c[SOS:RealTime] SSE deletion event received: ' + (deletedId || deletedMongoId), 'color:#ef4444;font-weight:bold');
+          if (state.deletePrompt && ((deletedId && (state.deletePrompt.id === deletedId || state.deletePrompt._id === deletedId)) || (deletedMongoId && (state.deletePrompt._id === deletedMongoId || state.deletePrompt.id === deletedMongoId)))) {
+            state.deletePrompt = null;
+          }
+          if (state.notice && ((deletedId && state.notice.id === deletedId) || (deletedMongoId && state.notice._id === deletedMongoId))) {
+            state.notice = null;
+          }
           state.incidents = state.incidents.filter(x => (deletedId ? x.id !== deletedId : true) && (deletedMongoId ? x._id !== deletedMongoId : true));
           if (state.selected && ((deletedId && state.selected.id === deletedId) || (deletedMongoId && state.selected._id === deletedMongoId))) state.selected = null;
           if (state.activeAlarm && ((deletedId && state.activeAlarm.id === deletedId) || (deletedMongoId && state.activeAlarm._id === deletedMongoId))) {
@@ -461,16 +496,22 @@ function connectSocket() {
       try { event = JSON.parse(e.data); } catch { return; }
       if (event.event === 'connection.ready') return;
       console.log('%c[SOS:RealTime] WebSocket event received:', 'color:#0284c7', event);
-      state.notice = event;
 
       // Trigger siren if this is a new emergency alert for the responder
       if (event.event === 'sos.created' && isResponderUser(state.user)) {
+        state.notice = event;
         console.log('%c[SOS:Responder] Emergency SOS received via WebSocket!', 'color:#ef4444;font-weight:bold');
         triggerResponderEmergencyAlert(event);
       } else if (event.event === 'sos.deleted') {
         const deletedId = event.id;
         const deletedMongoId = event._id;
         console.log('%c[SOS:RealTime] WebSocket deletion event received: ' + (deletedId || deletedMongoId), 'color:#ef4444;font-weight:bold');
+        if (state.deletePrompt && ((deletedId && (state.deletePrompt.id === deletedId || state.deletePrompt._id === deletedId)) || (deletedMongoId && (state.deletePrompt._id === deletedMongoId || state.deletePrompt.id === deletedMongoId)))) {
+          state.deletePrompt = null;
+        }
+        if (state.notice && ((deletedId && state.notice.id === deletedId) || (deletedMongoId && state.notice._id === deletedMongoId))) {
+          state.notice = null;
+        }
         state.incidents = state.incidents.filter(x => (deletedId ? x.id !== deletedId : true) && (deletedMongoId ? x._id !== deletedMongoId : true));
         if (state.selected && ((deletedId && state.selected.id === deletedId) || (deletedMongoId && state.selected._id === deletedMongoId))) state.selected = null;
         if (state.activeAlarm && ((deletedId && state.activeAlarm.id === deletedId) || (deletedMongoId && state.activeAlarm._id === deletedMongoId))) {
@@ -482,6 +523,8 @@ function connectSocket() {
         try { sessionStorage.setItem('sos_alerted_ids', JSON.stringify([...alertedSosIds])); } catch {}
         render();
         return;
+      } else {
+        state.notice = event;
       }
 
       await refresh();
@@ -530,7 +573,7 @@ function shell(content) {
             <span class="confirmModalWarningIcon">⚠️</span>
             <h3 id="deleteModalTitle">Delete SOS Alert</h3>
           </div>
-          <p class="confirmModalQuestion">Are you sure you want to delete this SOS alert?</p>
+          <p class="confirmModalQuestion">Are you sure you want to permanently delete this incident?</p>
           <div class="confirmModalTargetCard">
             <span class="confirmModalIdLabel">Incident ID</span>
             <b class="confirmModalIdValue">${esc(typeof state.deletePrompt === 'object' ? state.deletePrompt.id : state.deletePrompt)}</b>
@@ -547,7 +590,7 @@ function shell(content) {
       <div class="headerTop">
         <div class="brand">
           <span class="brandMark">C</span>
-          <div><b>College ERP</b><small>${isResp ? 'Permanent Emergency Responder Unit (RESP-001)' : 'Emergency Response'}</small></div>
+          <div><b>College ERP</b><small>${isResp ? `Emergency Responder (${esc(state.user?.id || 'Console')})` : 'Emergency Response'}</small></div>
         </div>
         <div class="identity">
           <span class="avatar">${esc(state.user.name?.[0] || (isResp ? 'R' : 'U'))}</span>
@@ -575,6 +618,43 @@ function shell(content) {
   </div>`;
 }
 
+function showLoginError(msg) {
+  state.error = msg;
+  let toast = document.querySelector('#loginToast');
+  if (!toast) {
+    const form = document.querySelector('#login');
+    const header = form?.querySelector('.formHeader');
+    if (form && header) {
+      toast = document.createElement('div');
+      toast.id = 'loginToast';
+      toast.className = 'toast loginToast';
+      toast.setAttribute('role', 'alert');
+      header.insertAdjacentElement('afterend', toast);
+    }
+  }
+  if (toast) {
+    toast.style.display = 'flex';
+    toast.innerHTML = `${esc(msg)}<button type="button" data-action="clear-error">×</button>`;
+    const btn = toast.querySelector('[data-action="clear-error"]');
+    if (btn) {
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearLoginError();
+      };
+    }
+  }
+}
+
+function clearLoginError() {
+  state.error = '';
+  const toast = document.querySelector('#loginToast');
+  if (toast) {
+    toast.style.display = 'none';
+    toast.innerHTML = '';
+  }
+}
+
 // ONE UNIFIED SIGN IN SCREEN FOR ALL USERS (Students, Responders, Teachers, Admins)
 function login() {
   app.innerHTML = `<div class="login">
@@ -585,15 +665,20 @@ function login() {
       <p>Report emergencies. Coordinate response. Keep every student informed.</p>
       <div class="secure">● Secure · Audited · Real-time 24/7</div>
     </section>
-    <form id="login" novalidate>
+    <form id="login" autocomplete="off" novalidate>
+      <!-- Decoy fields to intercept aggressive browser credential autofill -->
+      <div style="position:absolute;left:-9999px;top:-9999px;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden" aria-hidden="true">
+        <input type="text" name="fake_username_autofill" tabindex="-1" autocomplete="username">
+        <input type="password" name="fake_password_autofill" tabindex="-1" autocomplete="current-password">
+      </div>
       <div class="formHeader">
         <p class="eyebrow">PORTAL ACCESS</p>
         <h2>Sign in</h2>
         <p>Enter your details to open your emergency response dashboard.</p>
       </div>
-      ${state.error ? `<div class="toast" role="alert" style="margin-bottom:1rem">${esc(state.error)}<button data-action="clear-error">×</button></div>` : ''}
-      <label>Full Name<input required type="text" name="name" id="name" placeholder="Enter full name" autocomplete="name" enterkeyhint="next"></label>
-      <label>Regd. / ID No.<input required type="text" name="regdNo" id="regdNo" placeholder="Enter Registration / Roll / ID No." autocomplete="off" autocapitalize="characters" spellcheck="false" pattern="^[A-Za-z0-9_\-\.\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID (e.g. 2024CS001, STU-001, EMP-101). Email addresses are not accepted." enterkeyhint="next"></label>
+      <div id="loginToast" class="toast loginToast" role="alert" style="${state.error ? '' : 'display:none;'}">${esc(state.error || '')}<button type="button" data-action="clear-error">×</button></div>
+      <label>Full Name<input required type="text" name="name" id="name" placeholder="Enter full name" autocomplete="off" enterkeyhint="next"></label>
+      <label>Regd. / ID No.<input required type="text" name="registration_number" id="regdNo" value="" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\-\.\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID (e.g. 2024CS001, STU-001, EMP-101). Email addresses are not accepted." enterkeyhint="next"></label>
       <label>Role
         <select name="role" id="role" required>
           <option value="STUDENT">Student</option>
@@ -603,7 +688,12 @@ function login() {
       </label>
       <div id="pinGroup" style="display:none">
         <label>Responder PIN
-          <input type="password" name="pin" id="pin" placeholder="••••••••" autocomplete="current-password">
+          <div class="pinWrapper">
+            <input type="password" name="pin" id="pin" value="" placeholder="Enter Responder PIN" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly')">
+            <button type="button" class="btnTogglePin" id="togglePinVisibility" aria-label="Show PIN" title="Show PIN">
+              <svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
         </label>
       </div>
       <button class="primary" type="submit" id="open-dashboard-btn">Open Dashboard →</button>
@@ -611,35 +701,99 @@ function login() {
     </form>
   </div>`;
 
-  // Dynamic PIN field toggle based on role selection
+  // Dynamic PIN field toggle based on role selection (without autofilling any ID)
   const roleSelect = document.querySelector('#role');
   const pinGroup = document.querySelector('#pinGroup');
-  const regdInput = document.querySelector('#regdNo');
+  const regdInput = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
+  const pinInput = document.querySelector('#pin');
+  const togglePinBtn = document.querySelector('#togglePinVisibility');
   const roleHint = document.querySelector('#roleHint');
 
-  if (roleSelect && pinGroup) {
-    roleSelect.addEventListener('change', () => {
-      const isResp = roleSelect.value === 'RESPONDER';
-      pinGroup.style.display = isResp ? 'block' : 'none';
-      if (isResp) {
-        if (!regdInput.value || regdInput.value.startsWith('STU') || regdInput.value.startsWith('REG')) {
-          regdInput.value = 'RESP-001';
-        }
-        roleHint.textContent = 'Authorized Emergency Responder identity: RESP-001 (PIN required).';
-      } else {
-        if (regdInput.value === 'RESP-001') regdInput.value = '';
-        roleHint.textContent = 'Students access the SOS request dashboard.';
-      }
+  // Ensure Responder PIN field starts 100% empty with no bullets
+  if (pinInput) {
+    pinInput.value = '';
+    pinInput.defaultValue = '';
+
+    ['focus', 'pointerdown', 'mousedown', 'touchstart'].forEach(evt => {
+      pinInput.addEventListener(evt, () => {
+        pinInput.removeAttribute('readonly');
+      }, { passive: true });
     });
   }
 
-  // Also check if user typed RESP-001 in regdNo
-  if (regdInput && roleSelect && pinGroup) {
-    regdInput.addEventListener('input', () => {
-      if (regdInput.value.trim().toUpperCase() === 'RESP-001') {
-        roleSelect.value = 'RESPONDER';
-        pinGroup.style.display = 'block';
-        roleHint.textContent = 'Authorized Emergency Responder identity: RESP-001 (PIN required).';
+  // Eye icon show/hide toggle for Responder PIN
+  if (togglePinBtn && pinInput) {
+    togglePinBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const isPassword = pinInput.type === 'password';
+      pinInput.type = isPassword ? 'text' : 'password';
+      togglePinBtn.setAttribute('title', isPassword ? 'Hide PIN' : 'Show PIN');
+      togglePinBtn.setAttribute('aria-label', isPassword ? 'Hide PIN' : 'Show PIN');
+      togglePinBtn.innerHTML = isPassword
+        ? `<svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><line x1="2" y1="2" x2="22" y2="22"/></svg>`
+        : `<svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>`;
+      pinInput.focus();
+    });
+  }
+
+  if (regdInput) {
+    // Explicitly guarantee field starts completely blank
+    regdInput.value = '';
+    regdInput.defaultValue = '';
+
+    // Active anti-autofill wiper: unconditionally purge any browser-injected RESP-001
+    const purgeAutofill = () => {
+      const el = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
+      if (el && (el.value.toUpperCase() === 'RESP-001' || (!el.matches(':focus') && el.value.toUpperCase() === 'RESP-001'))) {
+        el.value = '';
+      }
+    };
+
+    purgeAutofill();
+    requestAnimationFrame(purgeAutofill);
+    setTimeout(purgeAutofill, 20);
+    setTimeout(purgeAutofill, 60);
+    setTimeout(purgeAutofill, 150);
+    setTimeout(purgeAutofill, 300);
+    setTimeout(purgeAutofill, 600);
+    setTimeout(purgeAutofill, 1200);
+
+    // If browser auto-injected RESP-001 while unfocused
+    regdInput.addEventListener('change', () => {
+      if (!regdInput.matches(':focus') && regdInput.value.toUpperCase() === 'RESP-001') {
+        regdInput.value = '';
+      }
+    });
+
+    // Ensure readonly is removed on focus / click / touch
+    ['focus', 'pointerdown', 'mousedown', 'touchstart'].forEach(evt => {
+      regdInput.addEventListener(evt, () => {
+        regdInput.removeAttribute('readonly');
+      }, { passive: true });
+    });
+  }
+
+  if (roleSelect && pinGroup) {
+    roleSelect.addEventListener('change', () => {
+      clearLoginError();
+      const isResp = roleSelect.value === 'RESPONDER';
+      pinGroup.style.display = isResp ? 'block' : 'none';
+      if (isResp) {
+        if (pinInput) {
+          pinInput.value = '';
+          pinInput.defaultValue = '';
+          pinInput.type = 'password';
+        }
+        if (togglePinBtn) {
+          togglePinBtn.setAttribute('title', 'Show PIN');
+          togglePinBtn.setAttribute('aria-label', 'Show PIN');
+          togglePinBtn.innerHTML = `<svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>`;
+        }
+        roleHint.textContent = 'Emergency Responders require authorized ID and PIN.';
+      } else {
+        if (pinInput) pinInput.value = '';
+        roleHint.textContent = 'Students access the SOS request dashboard.';
       }
     });
   }
@@ -659,11 +813,11 @@ function create() {
     </div>
   </section>
   <div class="categoryGrid">${state.categories.map(c => `<button class="category" data-category="${c.id}"><span class="catIcon">${c.icon}</span><span><b>${esc(c.name)}</b><small>${c.examples.slice(0, 3).map(esc).join(' · ')}</small></span><span class="priority ${c.priority.toLowerCase()}">${c.priority}</span><i>→</i></button>`).join('')}</div>
-  <div class="privacy">Your location is immediately routed to the permanent emergency responder (RESP-001).</div>`;
+  <div class="privacy">Your location is immediately routed to campus emergency responders.</div>`;
 }
 
 function confirm(c) {
-  return `<section class="panel confirm"><button class="back" data-action="back-create">← Back to categories</button><div class="confirmIcon">${c.icon}</div><p class="eyebrow danger">CONFIRM ${esc(c.name.toUpperCase())}</p><h1>Are you sure you want to send an SOS?</h1><p>This will immediately alert <b>${labels[c.primaryDepartmentId]}</b> and dispatch an emergency push alert to <b>Permanent Responder RESP-001</b>.</p><form id="create-sos" data-id="${c.id}"><label>What is happening? <span>Optional</span><textarea name="description" maxlength="1000" placeholder="Briefly describe what happened, if you can."></textarea></label><button type="button" class="locationBtn" data-action="gps">⌖ <span>Use my current location</span></button><div class="formGrid"><label>Building<input required name="building" placeholder="e.g. Block A"></label><label>Floor<input required name="floor" placeholder="e.g. 2nd Floor"></label><label>Room / area<input required name="room" placeholder="e.g. Room 204"></label></div><div class="actions"><button type="button" class="secondary" data-action="back-create">Cancel</button><button class="sosButton">Send SOS now</button></div></form></section>`;
+  return `<section class="panel confirm"><button class="back" data-action="back-create">← Back to categories</button><div class="confirmIcon">${c.icon}</div><p class="eyebrow danger">CONFIRM ${esc(c.name.toUpperCase())}</p><h1>Are you sure you want to send an SOS?</h1><p>This will immediately alert <b>${labels[c.primaryDepartmentId]}</b> and dispatch an emergency alert to active emergency responders.</p><form id="create-sos" data-id="${c.id}"><label>What is happening? <span>Optional</span><textarea name="description" maxlength="1000" placeholder="Briefly describe what happened, if you can."></textarea></label><button type="button" class="locationBtn" data-action="gps">⌖ <span>Use my current location</span></button><div class="formGrid"><label>Building<input required name="building" placeholder="e.g. Block A"></label><label>Floor<input required name="floor" placeholder="e.g. 2nd Floor"></label><label>Room / area<input required name="room" placeholder="e.g. Room 204"></label></div><div class="actions"><button type="button" class="secondary" data-action="back-create">Cancel</button><button class="sosButton">Send SOS now</button></div></form></section>`;
 }
 
 function active(i) {
@@ -682,9 +836,9 @@ function board() {
 
   let eyebrow = 'EMERGENCY OPERATIONS', title = 'Incident board', desc = 'Live requests assigned to your response scope.';
   if (isResp) {
-    eyebrow = 'PERMANENT RESPONDER CONSOLE (RESP-001)';
+    eyebrow = `EMERGENCY RESPONDER CONSOLE (${esc(state.user?.id || 'ACTIVE')})`;
     title = 'Emergency Response Operations';
-    desc = 'Permanent emergency responder console receiving real-time SOS push alerts from all students.';
+    desc = 'Emergency responder console receiving real-time SOS push alerts from all students.';
   } else if (state.user?.role === 'TEACHER') {
     eyebrow = 'TEACHER DASHBOARD';
     title = 'Teacher Incident Board';
@@ -697,7 +851,7 @@ function board() {
 
   const deviceBadgeClass = state.deviceStatus === 'active' ? 'active' : (state.deviceStatus === 'permission_needed' ? 'warning' : '');
   const deviceBadgeText = state.deviceStatus === 'active'
-    ? 'FCM Device Linked (RESP-001)'
+    ? `FCM Device Linked (${esc(state.user?.id || 'Active')})`
     : (state.deviceStatus === 'permission_needed' ? 'Push Permission Required' : 'Syncing Device FCM…');
 
   return `
@@ -870,41 +1024,82 @@ async function loadStats() {
 async function handleLogin(formEl) {
   const f = formEl || document.querySelector('#login');
   if (!f) return;
-  const name = String(f.elements['name']?.value || '').trim();
-  const regdNo = String(f.elements['regdNo']?.value || '').trim();
-  const role = String(f.elements['role']?.value || 'STUDENT').trim();
-  const pin = String(f.elements['pin']?.value || '').trim();
+  const nameInput = f.elements['name'];
+  const regdInput = f.elements['registration_number'] || f.elements['regdNo'];
+  const roleSelect = f.elements['role'];
+  const pinInput = f.elements['pin'];
+
+  const name = String(nameInput?.value || '').trim();
+  const regdNo = String(regdInput?.value || '').trim();
+  const role = String(roleSelect?.value || 'STUDENT').trim();
+  const pin = String(pinInput?.value || '').trim();
 
   if (!name) {
-    state.error = 'Please enter your full name.';
-    render();
+    showLoginError('Please enter your full name.');
+    nameInput?.focus();
     return;
   }
   if (!regdNo) {
-    state.error = 'Please enter your Registration / Roll / ID No.';
-    render();
+    showLoginError('Please enter your Registration / ID No.');
+    regdInput?.focus();
     return;
   }
   if (regdNo.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regdNo)) {
-    state.error = 'Email addresses are not accepted. Please enter your Registration / Roll / ID No.';
-    render();
+    showLoginError('Email addresses are not accepted. Please enter your Registration / ID No.');
+    if (regdInput) {
+      regdInput.value = '';
+      regdInput.focus();
+    }
     return;
   }
   if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(regdNo)) {
-    state.error = 'Invalid Registration / Roll / ID No. Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID.';
-    render();
+    showLoginError('Invalid Registration Number');
+    if (regdInput) {
+      regdInput.value = '';
+      regdInput.focus();
+    }
     return;
   }
 
-  const isResp = role === 'RESPONDER' || regdNo.toUpperCase() === 'RESP-001';
-  if (isResp && !pin) {
-    state.error = 'Responder PIN is required for RESP-001 authentication.';
-    render();
-    return;
+  const isResp = role === 'RESPONDER';
+  if (isResp) {
+    if (!pin) {
+      showLoginError('Responder PIN is required for emergency responder authentication.');
+      pinInput?.focus();
+      return;
+    }
+
+    // 1. Wrong Registration Number
+    // - If incorrect Registration Number, do NOT clear or reset the entire screen/form.
+    // - Keep the page, layout, entered PIN, buttons, and all other UI elements unchanged.
+    // - Only clear/vacate the incorrect Registration Number field.
+    // - Show a clear error message: "Invalid Registration Number".
+    if (regdNo !== '250131') {
+      showLoginError('Invalid Registration Number');
+      if (regdInput) {
+        regdInput.value = '';
+        regdInput.focus();
+      }
+      return;
+    }
+
+    // 2. Wrong PIN
+    // - If incorrect PIN, do NOT clear or reset the entire screen/form.
+    // - Keep the page, layout, Registration Number, buttons, and all other UI elements unchanged.
+    // - Only clear/vacate the incorrect PIN field.
+    // - Show a clear error message: "Invalid PIN".
+    if (pin !== '2611') {
+      showLoginError('Invalid PIN');
+      if (pinInput) {
+        pinInput.value = '';
+        pinInput.focus();
+      }
+      return;
+    }
   }
 
   state.busy = true;
-  state.error = '';
+  clearLoginError();
   try {
     console.log(`[SOS:Auth] Logging in as ${name} (${regdNo}) with role: ${role}`);
     let d;
@@ -915,7 +1110,11 @@ async function handleLogin(formEl) {
         body: JSON.stringify({ name, regdNo, role, pin })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Authentication failed');
+      if (!res.ok) {
+        const err = new Error(data.error || 'Authentication failed');
+        err.field = data.field;
+        throw err;
+      }
       d = data;
     } catch (apiErr) {
       if (isResp) throw apiErr;
@@ -949,8 +1148,22 @@ async function handleLogin(formEl) {
     render();
   } catch (err) {
     console.error('[SOS:Auth] Authentication error:', err.message);
-    state.error = err.message;
-    render();
+    const msg = err.message || 'Authentication failed';
+    showLoginError(msg);
+
+    if (isResp) {
+      if (err.field === 'registration_number' || msg.toLowerCase().includes('registration') || msg.toLowerCase().includes('regd')) {
+        if (regdInput) {
+          regdInput.value = '';
+          regdInput.focus();
+        }
+      } else if (err.field === 'pin' || msg.toLowerCase().includes('pin')) {
+        if (pinInput) {
+          pinInput.value = '';
+          pinInput.focus();
+        }
+      }
+    }
   } finally {
     state.busy = false;
   }
@@ -1027,19 +1240,22 @@ app.addEventListener('submit', async (e) => {
   }
 });
 
-// Click delegation
-app.addEventListener('click', async (e) => {
+// Reliable global click delegation for dynamic elements
+document.addEventListener('click', async (e) => {
+  // 1. Overlay backdrop click closes modal
   if (e.target.classList.contains('confirmModalOverlay')) {
+    e.preventDefault();
+    e.stopPropagation();
     state.deletePrompt = null;
     render();
     return;
   }
 
-  const el = e.target.closest('button');
-  if (!el) return;
-
-  const deleteBtn = el.closest('[data-delete-sos]');
+  // 2. Incident Delete Button clicked on card, details header, or sticky bar
+  const deleteBtn = e.target.closest('[data-delete-sos]');
   if (deleteBtn) {
+    e.preventDefault();
+    e.stopPropagation();
     const incId = deleteBtn.dataset.deleteSos;
     const mongoId = deleteBtn.dataset.deleteMongoid || '';
     const incObj = state.incidents.find(x => x.id === incId || (mongoId && x._id === mongoId));
@@ -1052,79 +1268,114 @@ app.addEventListener('click', async (e) => {
     return;
   }
 
-  const a = el.dataset.action;
+  const el = e.target.closest('button, [data-action], [data-view], [data-incident]');
+  if (!el) return;
 
+  const a = el.dataset?.action;
+
+  // 3. Cancel Delete Action
   if (a === 'cancel-delete') {
+    e.preventDefault();
+    e.stopPropagation();
     state.deletePrompt = null;
     render();
     return;
   }
 
+  // 4. Confirm Delete Action
   if (a === 'confirm-delete') {
+    e.preventDefault();
+    e.stopPropagation();
     const target = state.deletePrompt;
     if (!target) return;
+
+    // Immediately clear state.deletePrompt so this confirmation modal cannot be confirmed twice
+    state.deletePrompt = null;
+    state.notice = null;
+    state.error = null;
+
     const incId = typeof target === 'object' ? target.id : target;
     const mongoId = (typeof target === 'object' && target._id) ? target._id : '';
-    // Priority: use actual MongoDB document _id for deletion
     const deleteKey = mongoId || incId;
+
+    if (incId) locallyDeletedIds.add(incId);
+    if (mongoId) locallyDeletedIds.add(mongoId);
+    try {
+      sessionStorage.setItem('sos_deleted_ids', JSON.stringify([...locallyDeletedIds]));
+    } catch {}
+
+    // Immediately remove the incident from local responder state
+    state.incidents = state.incidents.filter(x => x.id !== incId && (!mongoId || x._id !== mongoId));
+    if (state.selected && (state.selected.id === incId || (mongoId && state.selected._id === mongoId))) {
+      state.selected = null;
+    }
+    if (state.activeAlarm && (state.activeAlarm.id === incId || (mongoId && state.activeAlarm._id === mongoId))) {
+      state.activeAlarm = null;
+      stopEmergencyAlarm();
+    }
+    alertedSosIds.delete(incId);
+    if (mongoId) alertedSosIds.delete(mongoId);
+    try {
+      sessionStorage.setItem('sos_alerted_ids', JSON.stringify([...alertedSosIds]));
+    } catch {}
+
+    // Synchronously re-render UI:
+    // - Modal is closed immediately
+    // - Deleted incident disappears immediately
+    // - Next incidents are rendered immediately with their Delete buttons active and fully clickable!
+    // - No overlay, toast, alert, or modal is left blocking clicks
+    render();
+
     if (!deleteKey) return;
 
-    console.log(`%c[SOS:Delete] Permanently deleting SOS alert from MongoDB Atlas: _id=${mongoId || 'n/a'}, id=${incId}`, 'color:#dc2626;font-weight:bold');
-    state.busy = true;
-    try {
-      // 1. Permanently delete from MongoDB Atlas via backend API
-      // If backend deletion fails, an error will be thrown and caught in catch
-      const res = await api(`/api/sos/${encodeURIComponent(deleteKey)}`, { method: 'DELETE' });
-      console.log('[SOS:Delete] Successfully deleted from backend API / MongoDB Atlas:', res);
-
-      // 2. Delete from Firebase Cloud Firestore directly via client SDK if active
+    // Execute backend deletion asynchronously without freezing the UI or blocking next deletes
+    (async () => {
       try {
-        if (incId) await deleteIncidentFromFirestore(incId);
-        if (mongoId && mongoId !== incId) await deleteIncidentFromFirestore(mongoId);
-      } catch (errFs) {
-        console.warn('[SOS:Delete] Firestore client delete notice:', errFs.message);
-      }
+        console.log(`%c[SOS:Delete] Permanently deleting SOS alert from database: _id=${mongoId || 'n/a'}, id=${incId}`, 'color:#dc2626;font-weight:bold');
+        
+        // Single DELETE request using unique MongoDB document _id
+        await api(`/api/sos/${encodeURIComponent(deleteKey)}`, { method: 'DELETE' });
+        console.log('[SOS:Delete] Successfully deleted from MongoDB Atlas: SOS alert deleted successfully.');
 
-      // 3. Post to BroadcastChannel so all open tabs update immediately
-      if (sosBroadcast) {
-        sosBroadcast.postMessage({ event: 'sos.deleted', id: incId, _id: mongoId });
-      }
+        // Delete from Firestore in background
+        try {
+          if (incId) deleteIncidentFromFirestore(incId).catch(() => {});
+          if (mongoId && mongoId !== incId) deleteIncidentFromFirestore(mongoId).catch(() => {});
+        } catch {}
 
-      // 4. Clean up local state
-      state.incidents = state.incidents.filter(x => x.id !== incId && (!mongoId || x._id !== mongoId));
-      if (state.selected && (state.selected.id === incId || (mongoId && state.selected._id === mongoId))) {
-        state.selected = null;
-      }
-      if (state.activeAlarm && (state.activeAlarm.id === incId || (mongoId && state.activeAlarm._id === mongoId))) {
-        state.activeAlarm = null;
-        stopEmergencyAlarm();
-      }
-      alertedSosIds.delete(incId);
-      if (mongoId) alertedSosIds.delete(mongoId);
-      try {
-        sessionStorage.setItem('sos_alerted_ids', JSON.stringify([...alertedSosIds]));
-      } catch {}
+        // Broadcast to other open tabs
+        if (sosBroadcast) {
+          sosBroadcast.postMessage({ event: 'sos.deleted', id: incId, _id: mongoId });
+        }
 
-      state.deletePrompt = null;
-      // Requirement 5: After successful deletion show: “SOS alert deleted successfully.”
-      state.notice = {
-        message: 'SOS alert deleted successfully.',
-        priority: 'LOW'
-      };
+        // Background sync from MongoDB Atlas without disrupting active UI or active delete prompt
+        const isResp = isResponderUser(state.user);
+        const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user?.role).toUpperCase());
+        const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my').catch(() => null);
+        if (Array.isArray(incs)) {
+          state.incidents = filterDeletedIncidents(incs);
+          if (!state.deletePrompt) {
+            render();
+          }
+        }
+      } catch (err) {
+        console.error('[SOS:Delete] MongoDB deletion failed for ' + deleteKey + ':', err);
+        // If deletion failed: refetch from database so incident remains visible, log technical error
+        if (incId) locallyDeletedIds.delete(incId);
+        if (mongoId) locallyDeletedIds.delete(mongoId);
+        try {
+          sessionStorage.setItem('sos_deleted_ids', JSON.stringify([...locallyDeletedIds]));
+        } catch {}
 
-      // Refresh list from MongoDB Atlas to guarantee state sync
-      await refresh();
-    } catch (err) {
-      console.error('[SOS:Delete] MongoDB deletion failed:', err);
-      // Requirement 4: If deletion fails:
-      // - Keep the alert visible.
-      // - Show a clear error message.
-      state.deletePrompt = null;
-      state.error = 'Failed to delete SOS alert: ' + (err.message || 'Database deletion error');
-      render();
-    } finally {
-      state.busy = false;
-    }
+        const isResp = isResponderUser(state.user);
+        const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user?.role).toUpperCase());
+        const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my').catch(() => null);
+        if (Array.isArray(incs)) {
+          state.incidents = filterDeletedIncidents(incs);
+          render();
+        }
+      }
+    })();
     return;
   }
 
@@ -1306,7 +1557,14 @@ app.addEventListener('click', async (e) => {
     render();
   }
 
-  if (a === 'clear-error') { state.error = ''; render(); }
+  if (a === 'clear-error') {
+    state.error = '';
+    if (!state.user) {
+      clearLoginError();
+    } else {
+      render();
+    }
+  }
   if (a === 'dismiss-notice') { state.notice = null; render(); }
   if (a === 'open-notice' && state.notice?.id) {
     try { state.selected = await api(`/api/sos/${state.notice.id}`); } catch { state.selected = state.incidents.find(x => x.id === state.notice.id); }
