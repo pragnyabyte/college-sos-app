@@ -13,14 +13,60 @@ export const transitions = {
 };
 export function canTransition(from, to) { return transitions[from]?.includes(to) ?? false; }
 export function validateLocation(v) {
-    if (!v || typeof v !== 'object')
-        throw new Error('Location is required');
-    const source = v.source === 'GPS' ? 'GPS' : 'MANUAL';
-    for (const f of ['building', 'floor', 'room'])
-        if (typeof v[f] !== 'string' || v[f].trim().length > 100)
-            throw new Error(`Invalid ${f}`);
-    const lat = v.latitude == null ? null : Number(v.latitude), lng = v.longitude == null ? null : Number(v.longitude), accuracy = v.accuracy == null ? null : Number(v.accuracy);
-    if (lat !== null && (lat < -90 || lat > 90) || lng !== null && (lng < -180 || lng > 180) || accuracy !== null && accuracy < 0)
+    if (!v || typeof v !== 'object') {
+        v = {};
+    }
+    const building = v.building == null ? '' : String(v.building).trim();
+    const floor = v.floor == null ? '' : String(v.floor).trim();
+    const room = v.room == null ? '' : String(v.room).trim();
+    const area = v.area == null ? (room || '') : String(v.area).trim();
+
+    if (building.length > 100) throw new Error('Building name is too long');
+    if (floor.length > 100) throw new Error('Floor name is too long');
+    if (room.length > 100) throw new Error('Room name is too long');
+    if (area.length > 100) throw new Error('Area name is too long');
+
+    const lat = (v.latitude == null || v.latitude === '') ? null : Number(v.latitude);
+    const lng = (v.longitude == null || v.longitude === '') ? null : Number(v.longitude);
+    const accuracy = (v.accuracy == null || v.accuracy === '') ? null : Number(v.accuracy);
+
+    if (lat !== null && (!Number.isFinite(lat) || lat < -90 || lat > 90))
         throw new Error('Invalid GPS coordinates');
-    return { building: v.building.trim(), floor: v.floor.trim(), room: v.room.trim(), area: String(v.area || '').slice(0, 100), latitude: lat, longitude: lng, accuracy, source };
+    if (lng !== null && (!Number.isFinite(lng) || lng < -180 || lng > 180))
+        throw new Error('Invalid GPS coordinates');
+    if (accuracy !== null && (!Number.isFinite(accuracy) || accuracy < 0))
+        throw new Error('Invalid GPS coordinates');
+
+    let locationStatus = String(v.locationStatus || v.location_status || '').trim();
+    if (!locationStatus) {
+        locationStatus = (lat !== null && lng !== null) ? 'available' : 'unavailable';
+    }
+
+    let gpsTimestamp = v.gpsTimestamp || v.gps_timestamp || null;
+    if (gpsTimestamp) {
+        try {
+            gpsTimestamp = new Date(gpsTimestamp).toISOString();
+        } catch {
+            gpsTimestamp = null;
+        }
+    } else if (lat !== null && lng !== null) {
+        gpsTimestamp = new Date().toISOString();
+    }
+
+    const source = (v.source === 'GPS' || (lat !== null && lng !== null)) ? 'GPS' : 'MANUAL';
+
+    return {
+        building,
+        floor,
+        room,
+        area,
+        latitude: lat,
+        longitude: lng,
+        accuracy,
+        locationStatus,
+        location_status: locationStatus,
+        gpsTimestamp,
+        gps_timestamp: gpsTimestamp,
+        source
+    };
 }

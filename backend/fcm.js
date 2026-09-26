@@ -374,7 +374,9 @@ export async function sendEmergencySosNotification(incident, isEscalation = fals
   const title = isEscalation
     ? `⚠️ URGENT REMINDER: SOS ${incident.id} UNACKNOWLEDGED`
     : `🚨 EMERGENCY SOS: ${incident.id} (${incident.priority})`;
-  const body = `${incident.student_name} reported ${incident.category_id || 'Emergency'} at ${incident.location?.building || 'Campus'}, ${incident.location?.floor || ''} ${incident.location?.room || ''}`.trim();
+  const locSummary = [incident.location?.building, incident.location?.floor, incident.location?.room].filter(Boolean).join(', ')
+    || (incident.location?.latitude != null ? `GPS: ${Number(incident.location.latitude).toFixed(4)}, ${Number(incident.location.longitude).toFixed(4)}` : 'Campus Location');
+  const body = `${incident.student_name} reported ${incident.category_id || 'Emergency'} at ${locSummary}`.trim();
   const clickUrl = `/responder?incidentId=${encodeURIComponent(incident.id)}`;
 
   const commonData = {
@@ -384,10 +386,16 @@ export async function sendEmergencySosNotification(incident, isEscalation = fals
     priority: String(incident.priority || 'HIGH'),
     studentName: String(incident.student_name || ''),
     studentId: String(incident.student_id || ''),
-    location: `${incident.location?.building || ''} ${incident.location?.floor || ''} ${incident.location?.room || ''}`.trim(),
+    location: locSummary,
     building: String(incident.location?.building || ''),
     floor: String(incident.location?.floor || ''),
     room: String(incident.location?.room || ''),
+    area: String(incident.location?.area || incident.location?.room || ''),
+    latitude: String(incident.location?.latitude ?? ''),
+    longitude: String(incident.location?.longitude ?? ''),
+    accuracy: String(incident.location?.accuracy ?? ''),
+    locationStatus: String(incident.location?.locationStatus || incident.location?.location_status || ''),
+    gpsTimestamp: String(incident.location?.gpsTimestamp || incident.location?.gps_timestamp || ''),
     description: String(incident.description || ''),
     timestamp: String(incident.created_at || new Date().toISOString()),
     isEscalation: String(isEscalation),

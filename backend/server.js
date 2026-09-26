@@ -5,7 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, verifyResponderCredentials } from './auth.js';
 import { categories } from './domain.js';
 import { initDatabase } from './db.js';
-import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, listIncidents, stats } from './service.js';
+import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, listIncidents, stats, updateIncidentLocation } from './service.js';
 import { initFirebaseAdmin, ensurePermanentResponder, registerResponderDevice, unregisterResponderDevice, getActiveResponderDevices, isRegisteredDeviceId, sendEmergencySosNotification, syncIncidentToFirestoreAdmin, deleteIncidentFromFirestoreAdmin, recordDeviceReceipt, recordDeviceOpen, updateDevicePing, checkAndEscalateIncidents, RESPONDER_ID } from './fcm.js';
 
 const port = Number(process.env.PORT || 4000), limits = new Map();
@@ -90,13 +90,25 @@ const rate = (req) => {
 const eventPayload = (event, incident) => ({
   event,
   id: incident.id,
+  _id: incident._id ? String(incident._id) : undefined,
   status: incident.status,
   priority: incident.priority,
-  categoryId: incident.category_id,
-  studentId: incident.student_id,
-  studentName: incident.student_name,
+  categoryId: incident.category_id || incident.categoryId,
+  studentId: incident.student_id || incident.studentId,
+  studentName: incident.student_name || incident.studentName,
   assignedDepartments: incident.assignedDepartments,
-  location: { building: incident.location.building, floor: incident.location.floor, room: incident.location.room },
+  location: {
+    building: incident.location?.building || '',
+    floor: incident.location?.floor || '',
+    room: incident.location?.room || '',
+    area: incident.location?.area || '',
+    latitude: incident.location?.latitude ?? null,
+    longitude: incident.location?.longitude ?? null,
+    accuracy: incident.location?.accuracy ?? null,
+    locationStatus: incident.location?.locationStatus || incident.location?.location_status || (incident.location?.latitude != null ? 'available' : 'unavailable'),
+    gpsTimestamp: incident.location?.gpsTimestamp || incident.location?.gps_timestamp || null,
+    source: incident.location?.source || (incident.location?.latitude != null ? 'GPS' : 'MANUAL')
+  },
   message: event === 'sos.created' ? `New ${incident.priority} SOS: ${incident.id}` : `SOS ${incident.id} is now ${incident.status.replaceAll('_', ' ').toLowerCase()}`,
   timestamp: new Date().toISOString()
 });
@@ -369,7 +381,7 @@ const server = createServer(async (req, res) => {
         return res.end(csv);
       }
 
-      const match = path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel))?$/);
+      const match = path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel|location))?$/);
       if (match) {
         const [, id, action] = match;
         if (req.method === 'GET' && !action) return json(res, 200, await getIncident(id, u));
@@ -381,6 +393,13 @@ const server = createServer(async (req, res) => {
           broadcast({ event: 'sos.deleted', id: resDel.id, _id: resDel._id, timestamp: new Date().toISOString() });
           console.log(`[SOS:Backend] Permanently deleted incident ${resDel.id} (_id: ${resDel._id}) from MongoDB`);
           return json(res, 200, { success: true, message: 'SOS alert deleted successfully.', id: resDel.id, _id: resDel._id });
+        }
+        if (action === 'location' && (req.method === 'PATCH' || req.method === 'PUT' || req.method === 'POST')) {
+          console.log(`[SOS:Backend] Received location update for incident ${id} by ${u.name} (${u.id})`);
+          const result = await updateIncidentLocation(id, await body(req), u, req.socket.remoteAddress);
+          broadcast(eventPayload('sos.location_updated', result));
+          syncIncidentToFirestoreAdmin(result).catch(() => {});
+          return json(res, 200, result);
         }
         if (req.method === 'POST' && action) {
           const map = { accept: 'ACCEPTED', respond: 'RESPONDING', arrive: 'ARRIVED', resolve: 'RESOLVED', cancel: 'CANCELLED' };

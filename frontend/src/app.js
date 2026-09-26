@@ -985,24 +985,91 @@ function create() {
     <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
       <div>
         <p class="eyebrow danger">STUDENT DASHBOARD</p>
-        <h1>What happened?</h1>
-        <p>Select the option that best describes your emergency. You’ll confirm before anything is sent.</p>
+        <h1>Emergency SOS</h1>
+        <p>Send an emergency SOS with automatic live location in one click, or select a category below.</p>
       </div>
-      <button class="btnTestDrillStudent" data-action="student-test-drill" title="Trigger instant test drill to responder">
-        ⚡ Test Drill / Send SOS
-      </button>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+        <button class="btnOneClickSosHero" data-action="instant-one-click-sos" title="Send emergency SOS immediately with automatic live GPS location">
+          🚨 Send SOS Now
+        </button>
+        <button class="btnTestDrillStudent" data-action="student-test-drill" title="Trigger instant test drill to responder">
+          ⚡ Test Drill
+        </button>
+      </div>
     </div>
   </section>
   <div class="categoryGrid">${state.categories.map(c => `<button class="category" data-category="${c.id}"><span class="catIcon">${c.icon}</span><span><b>${esc(c.name)}</b><small>${c.examples.slice(0, 3).map(esc).join(' · ')}</small></span><span class="priority ${c.priority.toLowerCase()}">${c.priority}</span><i>→</i></button>`).join('')}</div>
-  <div class="privacy">Your location is immediately routed to campus emergency responders.</div>`;
+  <div class="privacy">Your live GPS location is automatically captured and routed to campus emergency responders.</div>`;
 }
 
 function confirm(c) {
-  return `<section class="panel confirm"><button class="back" data-action="back-create">← Back to categories</button><div class="confirmIcon">${c.icon}</div><p class="eyebrow danger">CONFIRM ${esc(c.name.toUpperCase())}</p><h1>Are you sure you want to send an SOS?</h1><p>This will immediately alert <b>${labels[c.primaryDepartmentId]}</b> and dispatch an emergency alert to active emergency responders.</p><form id="create-sos" data-id="${c.id}"><label>What is happening? <span>Optional</span><textarea name="description" maxlength="1000" placeholder="Briefly describe what happened, if you can."></textarea></label><button type="button" class="locationBtn" data-action="gps">⌖ <span>Use my current location</span></button><div class="formGrid"><label>Building<input required name="building" placeholder="e.g. Block A"></label><label>Floor<input required name="floor" placeholder="e.g. 2nd Floor"></label><label>Room / area<input required name="room" placeholder="e.g. Room 204"></label></div><div class="actions"><button type="button" class="secondary" data-action="back-create">Cancel</button><button class="sosButton">Send SOS now</button></div></form></section>`;
+  const gpsStatusText = gps?.latitude != null
+    ? `📍 Live GPS captured (±${Math.round(gps.accuracy || 0)}m)`
+    : (gps?.locationStatus === 'permission_denied'
+      ? `⚠️ GPS permission denied — will send alert immediately`
+      : (gps?.locationStatus === 'unavailable'
+        ? `⚠️ GPS unavailable — will send alert immediately`
+        : `⌖ Live GPS will be automatically captured on click`));
+
+  return `<section class="panel confirm">
+    <button class="back" data-action="back-create">← Back to categories</button>
+    <div class="confirmIcon">${c.icon}</div>
+    <p class="eyebrow danger">CONFIRM ${esc(c.name.toUpperCase())}</p>
+    <h1>Are you sure you want to send an SOS?</h1>
+    <p>This will immediately alert <b>${labels[c.primaryDepartmentId]}</b> and dispatch an emergency alert to active emergency responders with your automatic live GPS location.</p>
+    <form id="create-sos" data-id="${c.id}">
+      <div class="oneClickNotice">
+        <span class="oneClickBadge">⚡ ONE-CLICK SOS</span>
+        <span>Click <b>Send SOS now</b> below. Your live GPS coordinates will be captured and sent automatically. Location fields are completely optional.</span>
+      </div>
+      <label>What is happening? <span class="optTag">Optional</span>
+        <textarea name="description" maxlength="1000" placeholder="Briefly describe what happened, if you can."></textarea>
+      </label>
+      <div class="gpsStatusIndicator" id="gps-status-indicator">
+        <button type="button" class="locationBtn" data-action="gps">⌖ <span id="gps-status-label">${gpsStatusText}</span></button>
+      </div>
+      <div class="formGrid">
+        <label>Building <span class="optTag">Optional</span>
+          <input name="building" placeholder="e.g. Block A (optional)">
+        </label>
+        <label>Floor <span class="optTag">Optional</span>
+          <input name="floor" placeholder="e.g. 2nd Floor (optional)">
+        </label>
+        <label>Room / area <span class="optTag">Optional</span>
+          <input name="room" placeholder="e.g. Room 204 (optional)">
+        </label>
+      </div>
+      <div id="sos-submit-error" class="sosSubmitError" style="display:none"></div>
+      <div class="actions">
+        <button type="button" class="secondary" data-action="back-create">Cancel</button>
+        <button class="sosButton" id="btn-submit-sos">Send SOS now</button>
+      </div>
+    </form>
+  </section>`;
 }
 
 function active(i) {
   const c = category(i.category_id), idx = order.indexOf(i.status);
+
+  const bldg = i.location?.building?.trim();
+  const flr = i.location?.floor?.trim();
+  const rm = (i.location?.room || i.location?.area || '').trim();
+  const manualLocation = [bldg, flr, rm].filter(Boolean).join(' · ');
+  const hasGps = i.location?.latitude != null && i.location?.longitude != null;
+  const lat = hasGps ? Number(i.location.latitude) : null;
+  const lng = hasGps ? Number(i.location.longitude) : null;
+  const acc = hasGps && i.location?.accuracy != null ? Math.round(i.location.accuracy) : null;
+
+  let locDisplay = '';
+  if (manualLocation && hasGps) {
+    locDisplay = `⌖ ${esc(manualLocation)} · GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc}m)`;
+  } else if (manualLocation) {
+    locDisplay = `⌖ ${esc(manualLocation)}`;
+  } else if (hasGps) {
+    locDisplay = `⌖ Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc}m)`;
+  } else {
+    locDisplay = `⌖ Location: Not provided`;
+  }
 
   if (i.status === 'QUEUED_OFFLINE') {
     return `
@@ -1011,7 +1078,7 @@ function active(i) {
         <p class="eyebrow" style="color:#fde68a">OFFLINE QUEUE · SOS PENDING TRANSMISSION</p>
         <h1>${esc(c?.name || 'Emergency')}</h1>
         <p class="incidentId">${i.id} · Queued: ${formatReportedTime(getIncidentCreatedAt(i))}</p>
-        <div class="location">⌖ ${esc(i.location.building)} · ${esc(i.location.floor)} · ${esc(i.location.room)}</div>
+        <div class="location">${locDisplay}</div>
       </section>
       <section class="panel" style="border:2px solid #f59e0b">
         <div class="sectionHead">
@@ -1030,8 +1097,46 @@ function active(i) {
     `;
   }
 
-  return `<section class="activeHero"><div class="pulse">!</div><p class="eyebrow">STUDENT DASHBOARD · SOS ACTIVE</p><h1>${esc(c?.name || 'Emergency')}</h1><p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p><div class="location">⌖ ${esc(i.location.building)} · ${esc(i.location.floor)} · ${esc(i.location.room)}</div></section><section class="panel"><div class="sectionHead"><div><p class="eyebrow">LIVE RESPONSE</p><h2>${message(i.status)}</h2></div>${status(i.status)}</div><div class="stepper">${order.map((s, n) => `<div class="${n < idx ? 'done' : n === idx ? 'current' : ''}"><span>${n < idx ? checkSvg : n + 1}</span><div><b>${pretty(s)}</b><small>${i.timeline && i.timeline.find(t => t.status === s) ? new Date(i.timeline.find(t => t.status === s).timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting'}</small></div></div>`).join('')}</div><button class="primary" data-incident="${i.id}">View full incident →</button></section>`;
+  return `
+    <section class="activeHero">
+      <div class="pulse">!</div>
+      <p class="eyebrow">STUDENT DASHBOARD · SOS ACTIVE</p>
+      <h1>${esc(c?.name || 'Emergency')}</h1>
+      <p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p>
+      <div class="location">${locDisplay}</div>
+      ${hasGps ? `<div style="margin-top:8px"><a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener noreferrer" class="btnMapsLink">📍 View my location on Google Maps</a></div>` : ''}
+    </section>
+
+    ${!hasGps ? `
+      <section class="panel gpsUnavailableAlert" style="border:2px solid #f59e0b;background:#fffbeb;margin-bottom:16px;">
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <span style="font-size:24px">⚠️</span>
+          <div>
+            <b style="color:#b45309;display:block;font-size:15px;margin-bottom:4px">Emergency Alert Sent — GPS Location Unavailable</b>
+            <p style="color:#78350f;margin:0 0 12px;font-size:14px">Your emergency alert was sent to responders, but your GPS location could not be obtained (${i.location?.locationStatus === 'permission_denied' ? 'permission was denied' : (i.location?.locationStatus === 'timeout' ? 'GPS request timed out' : 'location signal unavailable')}). You can retry sharing live GPS or add building details below:</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button type="button" class="primary" data-action="retry-location-share" data-id="${i.id}" style="background:#0284c7;border-color:#0369a1">📍 Share / Retry Live Location</button>
+              <button type="button" class="secondary" data-action="prompt-manual-location" data-id="${i.id}">✏️ Enter Building / Room Details</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    ` : ''}
+
+    <section class="panel">
+      <div class="sectionHead">
+        <div>
+          <p class="eyebrow">LIVE RESPONSE</p>
+          <h2>${message(i.status)}</h2>
+        </div>
+        ${status(i.status)}
+      </div>
+      <div class="stepper">${order.map((s, n) => `<div class="${n < idx ? 'done' : n === idx ? 'current' : ''}"><span>${n < idx ? checkSvg : n + 1}</span><div><b>${pretty(s)}</b><small>${i.timeline && i.timeline.find(t => t.status === s) ? new Date(i.timeline.find(t => t.status === s).timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting'}</small></div></div>`).join('')}</div>
+      <button class="primary" data-incident="${i.id}">View full incident →</button>
+    </section>
+  `;
 }
+
 
 function history() {
   const myIncidents = state.incidents.filter(i => i.student_id === state.user.id);
@@ -1125,6 +1230,25 @@ function cards(items) {
   return items.length ? items.map(i => {
     const c = category(i.category_id);
     const reportedTime = formatReportedTime(getIncidentCreatedAt(i));
+    const bldg = i.location?.building?.trim();
+    const flr = i.location?.floor?.trim();
+    const rm = (i.location?.room || i.location?.area || '').trim();
+    const manualLocation = [bldg, flr, rm].filter(Boolean).join(' · ');
+    const hasGps = i.location?.latitude != null && i.location?.longitude != null;
+    const lat = hasGps ? Number(i.location.latitude) : null;
+    const lng = hasGps ? Number(i.location.longitude) : null;
+    const acc = hasGps && i.location?.accuracy != null ? Math.round(i.location.accuracy) : null;
+
+    let locSnippet = '';
+    if (manualLocation) {
+      locSnippet = esc(manualLocation);
+      if (hasGps) locSnippet += ` <span class="badgeGpsActive">📍 GPS</span>`;
+    } else if (hasGps) {
+      locSnippet = `📍 GPS ${lat.toFixed(4)}, ${lng.toFixed(4)} (±${acc}m)`;
+    } else {
+      locSnippet = `<span class="badgeGpsUnavail">⚠️ GPS unavailable (Not provided)</span>`;
+    }
+
     return `<article class="incident ${i.priority.toLowerCase()} ${state.selected?.id === i.id ? 'highlighted' : ''}" data-search="${esc(`${i.id} ${i.student_id} ${i.student_name}`.toLowerCase())}" data-status="${i.status}">
       <div class="sectionHead">
         <span class="catIcon small">${c?.icon || 'SOS'}</span>
@@ -1135,7 +1259,7 @@ function cards(items) {
       <dl>
         <div><dt>Reported</dt><dd class="reportedMeta">${esc(reportedTime)}</dd></div>
         <div><dt>Student</dt><dd>${esc(i.student_name)} · ${esc(i.student_id)}</dd></div>
-        <div><dt>Location</dt><dd>${esc(i.location.building)} · ${esc(i.location.floor)} · ${esc(i.location.room)}</dd></div>
+        <div><dt>Location</dt><dd>${locSnippet}</dd></div>
         <div><dt>Department</dt><dd>${labels[i.primary_department_id] || 'Emergency Unit'}</dd></div>
       </dl>
       <div class="cardFoot">
@@ -1160,6 +1284,13 @@ function details(i) {
         }[i.status];
 
   const reportedTime = formatReportedTime(getIncidentCreatedAt(i));
+  const bldg = i.location?.building?.trim() || 'Not provided';
+  const flr = i.location?.floor?.trim() || 'Not provided';
+  const rm = (i.location?.room || i.location?.area || '').trim() || 'Not provided';
+  const hasGps = i.location?.latitude != null && i.location?.longitude != null;
+  const lat = hasGps ? Number(i.location.latitude) : null;
+  const lng = hasGps ? Number(i.location.longitude) : null;
+  const acc = hasGps && i.location?.accuracy != null ? Math.round(i.location.accuracy) : null;
 
   return `<section class="details">
     <button class="back" data-action="close-details">← Back</button>
@@ -1185,14 +1316,47 @@ function details(i) {
       <article class="panel">
         <h2>Emergency information</h2>
         <dl class="facts">
-          <div><dt>Student</dt><dd>${esc(i.student_name)}<small>${esc(i.student_id)}</small></dd></div>
+          <div><dt>Student name</dt><dd>${esc(i.student_name)}</dd></div>
+          <div><dt>Student ID</dt><dd>${esc(i.student_id)}</dd></div>
           <div><dt>Reported</dt><dd class="reportedMeta">${esc(reportedTime)}</dd></div>
-          <div><dt>Description</dt><dd>${esc(i.description || 'No description provided')}</dd></div>
+          <div><dt>Emergency description</dt><dd>${esc(i.description || 'No description provided')}</dd></div>
           <div><dt>Assigned to</dt><dd>${labels[i.primary_department_id] || 'Emergency Team'}</dd></div>
           ${i.accepted_by_name ? `<div><dt>Responder</dt><dd>${esc(i.accepted_by_name)}</dd></div>` : ''}
         </dl>
-        <h2>Location</h2>
-        <div class="locationBox">⌖ <div><b>${esc(i.location.building)} · ${esc(i.location.floor)}</b><span>${esc(i.location.room)}</span>${i.location.latitude ? `<small>GPS ${i.location.latitude.toFixed(5)}, ${i.location.longitude.toFixed(5)} · ±${Math.round(i.location.accuracy)}m</small>` : ''}</div></div>
+
+        <h2>Location details</h2>
+        <dl class="facts" style="margin-bottom:16px">
+          <div><dt>Building</dt><dd>${esc(bldg)}</dd></div>
+          <div><dt>Floor</dt><dd>${esc(flr)}</dd></div>
+          <div><dt>Room / Area</dt><dd>${esc(rm)}</dd></div>
+        </dl>
+
+        ${hasGps ? `
+          <div class="gpsLocationBox" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin-bottom:16px;">
+            <div class="gpsHeader" style="display:flex;align-items:flex-start;gap:12px;">
+              <span class="gpsIcon" style="font-size:24px">📍</span>
+              <div style="flex:1">
+                <b style="font-size:15px;display:block;color:#166534">Live GPS Coordinates</b>
+                <div style="font-family:monospace;font-size:15px;color:#0f172a;margin:2px 0;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+                <small style="color:#475569">Accuracy: ±${acc != null ? acc + 'm' : 'N/A'}${i.location.gpsTimestamp ? ` · Recorded: ${new Date(i.location.gpsTimestamp).toLocaleTimeString()}` : ''}</small>
+              </div>
+            </div>
+            <div style="margin-top:12px">
+              <a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener noreferrer" class="btnViewOnGoogleMaps">
+                📍 View on Google Maps
+              </a>
+            </div>
+          </div>
+        ` : `
+          <div class="gpsUnavailableBox" style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:12px;">
+            <span style="font-size:24px">⚠️</span>
+            <div>
+              <b style="color:#b45309;display:block">GPS location unavailable — contact the student for location.</b>
+              <small style="color:#78350f">${i.location?.locationStatus === 'permission_denied' ? 'The student denied location permission on their device.' : (i.location?.locationStatus === 'timeout' ? 'GPS location request timed out.' : 'No GPS signal was available at submission time.')}</small>
+            </div>
+          </div>
+        `}
+
         ${i.resolution_note ? `<h2>Resolution</h2><p>${esc(i.resolution_note)}</p>` : ''}
       </article>
       <article class="panel">
@@ -1210,6 +1374,7 @@ function details(i) {
     ${state.user.role === 'STUDENT' && ['SOS_SENT', 'DEPARTMENT_NOTIFIED'].includes(i.status) ? `<button class="dangerLink" data-transition="cancel" data-id="${i.id}">Cancel this SOS</button>` : ''}
   </section>`;
 }
+
 
 function analytics() {
   return `<section class="pageTitle row"><div><p class="eyebrow">OPERATIONS OVERVIEW</p><h1>Emergency analytics</h1><p>Live, database-backed response metrics.</p></div><button class="secondary" data-action="export">Export CSV</button></section><div class="stats" id="stats"><article><small>Loading metrics…</small></article></div><section class="panel analyticsNote"><h2>Operational safeguards</h2><p>Metrics use server timestamps and persisted incident records. Exact GPS data and restricted reports remain permission-controlled.</p></section>`;
@@ -1460,36 +1625,145 @@ async function handleLogin(formEl) {
 }
 
 let gps = null;
+let isSendingSos = false;
 
-// Form submit delegation
-app.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (e.target.id === 'login') {
-    return handleLogin(e.target);
+/**
+ * Captures live GPS coordinates using the Geolocation API.
+ * Uses high accuracy, 10-second timeout, 0 max age.
+ * Never hangs: has a fallback timeout so the emergency alert is NEVER delayed or lost.
+ */
+async function captureLiveGps(timeoutMs = 10000) {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    return {
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      gpsTimestamp: null,
+      locationStatus: 'unavailable'
+    };
   }
-  if (e.target.id === 'create-sos') {
-    if (state.busy) return;
-    state.busy = true;
 
-    const f = new FormData(e.target);
-    const cat = category(e.target.dataset.id);
+  return new Promise((resolve) => {
+    let resolved = false;
+
+    // Safety timeout ensures user is NEVER stuck on loading screen if browser hangs
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        console.warn('[SOS:GPS] Geolocation timed out after', timeoutMs, 'ms. Submitting SOS immediately.');
+        resolve({
+          latitude: null,
+          longitude: null,
+          accuracy: null,
+          gpsTimestamp: null,
+          locationStatus: 'timeout'
+        });
+      }
+    }, timeoutMs);
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        console.log('[SOS:GPS] Successfully captured live GPS coordinates:', position.coords);
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          gpsTimestamp: new Date(position.timestamp || Date.now()).toISOString(),
+          locationStatus: 'available'
+        });
+      },
+      (error) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        console.warn('[SOS:GPS] Geolocation error:', error.code, error.message);
+        let status = 'unavailable';
+        if (error.code === 1) { // PERMISSION_DENIED
+          status = 'permission_denied';
+        } else if (error.code === 3) { // TIMEOUT
+          status = 'timeout';
+        }
+        resolve({
+          latitude: null,
+          longitude: null,
+          accuracy: null,
+          gpsTimestamp: null,
+          locationStatus: status
+        });
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: timeoutMs,
+        maximumAge: 0
+      }
+    );
+  });
+}
+
+/**
+ * Submits an SOS incident with automatic GPS capture, optional building details,
+ * duplicate protection, and offline recovery.
+ */
+async function executeSosSubmission({ categoryId, description = '', building = '', floor = '', room = '', submitBtnEl = null, errorEl = null }) {
+  if (state.busy || isSendingSos) {
+    console.warn('[SOS:Student] SOS submission already in progress. Ignoring duplicate click.');
+    return;
+  }
+  isSendingSos = true;
+  state.busy = true;
+
+  if (submitBtnEl) {
+    submitBtnEl.disabled = true;
+    submitBtnEl.innerHTML = '<span class="btnSpinner"></span> Sending SOS...';
+  }
+  if (errorEl) {
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
+  }
+
+  try {
+    // 1. Capture live GPS coordinates (or use cached prefetch if available and fresh)
+    let gpsResult = gps;
+    if (!gpsResult || gpsResult.latitude == null) {
+      console.log('[SOS:Student] Capturing live GPS location (enableHighAccuracy: true, timeout: 10000ms)...');
+      gpsResult = await captureLiveGps(10000);
+    }
+    console.log('[SOS:Student] GPS capture result:', gpsResult);
+
+    // 2. Assemble complete payload
+    const cat = category(categoryId) || category('other') || state.categories[0];
     const idempotencyKey = crypto.randomUUID();
     const payload = {
-      categoryId: e.target.dataset.id,
-      description: f.get('description'),
-      location: { building: f.get('building'), floor: f.get('floor'), room: f.get('room'), ...gps, source: gps ? 'GPS' : 'MANUAL' },
+      categoryId: cat?.id || 'other',
+      description: String(description || '').trim(),
+      location: {
+        building: String(building || '').trim(),
+        floor: String(floor || '').trim(),
+        room: String(room || '').trim(),
+        area: String(room || '').trim(),
+        latitude: gpsResult.latitude,
+        longitude: gpsResult.longitude,
+        accuracy: gpsResult.accuracy,
+        gpsTimestamp: gpsResult.gpsTimestamp,
+        locationStatus: gpsResult.locationStatus,
+        source: gpsResult.latitude != null ? 'GPS' : 'MANUAL'
+      },
       idempotencyKey
     };
 
     console.log(`%c[SOS:Student] 1. Initiating SOS for category: ${cat?.name || 'Emergency'}`, 'color:#2563eb;font-weight:bold');
 
+    // 3. Offline handling
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
       addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
       const pendingInc = {
         id: localId,
         localId,
-        category_id: e.target.dataset.id,
+        category_id: payload.categoryId,
         student_id: state.user.id,
         student_name: state.user.name,
         description: payload.description || '',
@@ -1505,71 +1779,114 @@ app.addEventListener('submit', async (e) => {
       state.incidents.unshift(pendingInc);
       state.selected = pendingInc;
       state.error = '⚠️ Internet connection unavailable. Your SOS is saved in your offline queue and will automatically dispatch once connectivity returns. Responders have NOT been notified yet.';
-      state.busy = false;
       render();
       return;
     }
 
+    // 4. Submit to /api/sos
+    let created;
     try {
-      let created;
-      try {
-        console.log('[SOS:Student] 2. Submitting SOS payload to /api/sos...');
-        created = await api('/api/sos', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-      } catch (apiErr) {
-        console.warn('[SOS:Student] Backend request failed (offline/unreachable):', apiErr.message);
-        const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
-        addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
-        const pendingInc = {
-          id: localId,
-          localId,
-          category_id: e.target.dataset.id,
-          student_id: state.user.id,
-          student_name: state.user.name,
-          description: payload.description || '',
-          location: payload.location,
-          priority: cat?.priority || 'HIGH',
-          status: 'QUEUED_OFFLINE',
-          serverConfirmed: false,
-          primary_department_id: cat?.primaryDepartmentId || 'DEPT_ADMIN',
-          assigned_departments: cat?.departmentIds || ['DEPT_ADMIN'],
-          created_at: new Date().toISOString(),
-          timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
-        };
-        state.incidents.unshift(pendingInc);
-        state.selected = pendingInc;
-        state.error = '⚠️ Server connection could not be reached. SOS saved to offline queue. Responders have NOT been notified yet. Will auto-retry when online.';
-        state.busy = false;
-        render();
-        return;
-      }
-
-      console.log(`%c[SOS:Student] 3. SOS created successfully! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
-
-      // Sync to Firebase Cloud Firestore
-      console.log('[SOS:Student] 4. Syncing emergency document to Cloud Firestore...');
-      syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
-
-      // Instant broadcast across tabs on localhost
-      if (sosBroadcast) {
-        sosBroadcast.postMessage({ event: 'sos.created', incident: created });
-        console.log('%c[SOS:RealTime] 5. Published emergency broadcast across browser tabs', 'color:#8b5cf6;font-weight:bold');
-      }
-
-      state.selected = created;
-      state.notice = `🚨 Emergency SOS Confirmed (ID: ${created.id}). Response team notified!`;
-      await refresh();
-    } catch (x) {
-      console.error('[SOS:Student] Error submitting SOS:', x.message);
-      state.error = x.message;
+      console.log('[SOS:Student] 2. Submitting SOS payload to /api/sos...');
+      created = await api('/api/sos', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+    } catch (apiErr) {
+      console.warn('[SOS:Student] Backend request failed (offline/unreachable):', apiErr.message);
+      const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
+      addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
+      const pendingInc = {
+        id: localId,
+        localId,
+        category_id: payload.categoryId,
+        student_id: state.user.id,
+        student_name: state.user.name,
+        description: payload.description || '',
+        location: payload.location,
+        priority: cat?.priority || 'HIGH',
+        status: 'QUEUED_OFFLINE',
+        serverConfirmed: false,
+        primary_department_id: cat?.primaryDepartmentId || 'DEPT_ADMIN',
+        assigned_departments: cat?.departmentIds || ['DEPT_ADMIN'],
+        created_at: new Date().toISOString(),
+        timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
+      };
+      state.incidents.unshift(pendingInc);
+      state.selected = pendingInc;
+      state.error = '⚠️ Server connection could not be reached. SOS saved to offline queue. Responders have NOT been notified yet. Will auto-retry when online.';
       render();
-    } finally {
-      state.busy = false;
+      return;
     }
+
+    console.log(`%c[SOS:Student] 3. SOS created successfully! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
+
+    // Update button text to success state
+    if (submitBtnEl) {
+      submitBtnEl.innerHTML = '✓ SOS sent successfully.';
+    }
+
+    // Sync to Firebase Cloud Firestore
+    console.log('[SOS:Student] 4. Syncing emergency document to Cloud Firestore...');
+    syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
+
+    // Instant broadcast across tabs on localhost
+    if (sosBroadcast) {
+      sosBroadcast.postMessage({ event: 'sos.created', incident: created });
+      console.log('%c[SOS:RealTime] 5. Published emergency broadcast across browser tabs', 'color:#8b5cf6;font-weight:bold');
+    }
+
+    gps = null;
+    state.selected = created;
+    if (gpsResult.locationStatus === 'available') {
+      state.notice = `🚨 SOS sent successfully! (ID: ${created.id}). Response team notified with your live GPS location.`;
+    } else {
+      const reason = gpsResult.locationStatus === 'permission_denied'
+        ? 'GPS permission was denied'
+        : (gpsResult.locationStatus === 'timeout' ? 'GPS request timed out' : 'GPS signal was unavailable');
+      state.notice = `🚨 Emergency SOS sent successfully! (ID: ${created.id}). Note: ${reason}. Please enter building details if possible or retry location sharing.`;
+    }
+
+    await refresh();
+  } catch (err) {
+    console.error('[SOS:Student] Error submitting SOS:', err.message);
+    if (submitBtnEl) {
+      submitBtnEl.disabled = false;
+      submitBtnEl.innerHTML = '⚠️ Retry Sending SOS';
+    }
+    if (errorEl) {
+      errorEl.style.display = 'block';
+      errorEl.textContent = `Submission failed: ${err.message}. Please click to retry.`;
+    }
+    state.error = err.message;
+  } finally {
+    isSendingSos = false;
+    state.busy = false;
+  }
+}
+
+// Form submit delegation
+app.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (e.target.id === 'login') {
+    return handleLogin(e.target);
+  }
+  if (e.target.id === 'create-sos') {
+    const f = new FormData(e.target);
+    const submitBtn = e.target.querySelector('#btn-submit-sos') || e.target.querySelector('.sosButton');
+    const errorEl = e.target.querySelector('#sos-submit-error');
+
+    await executeSosSubmission({
+      categoryId: e.target.dataset.id,
+      description: f.get('description'),
+      building: f.get('building'),
+      floor: f.get('floor'),
+      room: f.get('room'),
+      submitBtnEl: submitBtn,
+      errorEl
+    });
   }
 });
+
 
 // Reliable global click delegation for dynamic elements
 document.addEventListener('click', async (e) => {
@@ -1955,13 +2272,102 @@ document.addEventListener('click', async (e) => {
   if (a === 'close-details') { state.selected = null; render(); }
   if (a === 'refresh') refresh();
 
-  if (a === 'gps') {
-    el.querySelector('span').textContent = 'Locating…';
-    navigator.geolocation?.getCurrentPosition(p => {
-      gps = { latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy };
-      el.querySelector('span').textContent = 'Exact location captured';
-    }, () => el.querySelector('span').textContent = 'Location unavailable — enter it below', { enableHighAccuracy: true, timeout: 8000 });
+  // Instant One-Click SOS triggered from hero banner
+  if (a === 'instant-one-click-sos') {
+    const heroBtn = el;
+    heroBtn.disabled = true;
+    heroBtn.innerHTML = '<span class="btnSpinner"></span> Sending SOS...';
+    await executeSosSubmission({
+      categoryId: 'other',
+      description: 'One-Click Emergency Alert',
+      submitBtnEl: heroBtn
+    });
   }
+
+  if (a === 'gps') {
+    const span = el.querySelector('span') || el;
+    span.textContent = 'Locating…';
+    const loc = await captureLiveGps(10000);
+    gps = loc;
+    if (loc.locationStatus === 'available') {
+      span.textContent = `📍 Live GPS captured (±${Math.round(loc.accuracy || 0)}m)`;
+    } else if (loc.locationStatus === 'permission_denied') {
+      span.textContent = '⚠️ Permission denied — alert will send without GPS';
+    } else if (loc.locationStatus === 'timeout') {
+      span.textContent = '⚠️ GPS timed out — alert will send without GPS';
+    } else {
+      span.textContent = '⚠️ Location unavailable — alert will send without GPS';
+    }
+  }
+
+  // Retry live location sharing for an active incident
+  if (a === 'retry-location-share') {
+    const incId = el.dataset.id;
+    const originalText = el.textContent;
+    el.textContent = 'Locating…';
+    el.disabled = true;
+    try {
+      const loc = await captureLiveGps(10000);
+      if (loc.locationStatus === 'available') {
+        const updated = await api(`/api/sos/${incId}/location`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+            accuracy: loc.accuracy,
+            gpsTimestamp: loc.gpsTimestamp,
+            locationStatus: 'available',
+            source: 'GPS'
+          })
+        });
+        state.selected = updated;
+        const idx = state.incidents.findIndex(x => x.id === incId);
+        if (idx !== -1) state.incidents[idx] = updated;
+        state.notice = '📍 Live GPS location successfully updated and shared with emergency responders!';
+        render();
+      } else {
+        const reason = loc.locationStatus === 'permission_denied' ? 'permission was denied' : (loc.locationStatus === 'timeout' ? 'GPS timed out' : 'signal was unavailable');
+        alert(`Could not capture location (${reason}). You can enter building/room details manually.`);
+        el.textContent = originalText;
+        el.disabled = false;
+      }
+    } catch (err) {
+      alert(`Failed to update location: ${err.message}`);
+      el.textContent = originalText;
+      el.disabled = false;
+    }
+  }
+
+  // Manually enter building / room details for an active incident
+  if (a === 'prompt-manual-location') {
+    const incId = el.dataset.id;
+    const currentInc = state.incidents.find(x => x.id === incId) || state.selected;
+    const building = prompt('Enter Building name (optional):', currentInc?.location?.building || '') ?? null;
+    if (building === null) return;
+    const floor = prompt('Enter Floor (optional):', currentInc?.location?.floor || '') ?? '';
+    const room = prompt('Enter Room / Area (optional):', currentInc?.location?.room || '') ?? '';
+
+    try {
+      const updated = await api(`/api/sos/${incId}/location`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          building: building.trim(),
+          floor: floor.trim(),
+          room: room.trim(),
+          area: room.trim(),
+          source: 'MANUAL'
+        })
+      });
+      state.selected = updated;
+      const idx = state.incidents.findIndex(x => x.id === incId);
+      if (idx !== -1) state.incidents[idx] = updated;
+      state.notice = 'Location details successfully updated and shared with responders!';
+      render();
+    } catch (err) {
+      alert(`Failed to update location details: ${err.message}`);
+    }
+  }
+
 
   if (a === 'export') {
     const keys = ['id', 'category_id', 'student_id', 'priority', 'status', 'primary_department_id', 'created_at'];
