@@ -6,7 +6,7 @@ import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, veri
 import { categories } from './domain.js';
 import { initDatabase } from './db.js';
 import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, listIncidents, stats } from './service.js';
-import { initFirebaseAdmin, ensurePermanentResponder, registerResponderDevice, unregisterResponderDevice, getActiveResponderDevices, sendEmergencySosNotification, syncIncidentToFirestoreAdmin, deleteIncidentFromFirestoreAdmin, RESPONDER_ID } from './fcm.js';
+import { initFirebaseAdmin, ensurePermanentResponder, registerResponderDevice, unregisterResponderDevice, getActiveResponderDevices, isRegisteredDeviceId, sendEmergencySosNotification, syncIncidentToFirestoreAdmin, deleteIncidentFromFirestoreAdmin, recordDeviceReceipt, recordDeviceOpen, updateDevicePing, checkAndEscalateIncidents, RESPONDER_ID } from './fcm.js';
 
 const port = Number(process.env.PORT || 4000), limits = new Map();
 
@@ -236,6 +236,42 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    // Device delivery receipt & open auditing (Supports valid auth token or verified registered responder deviceId)
+    const receiptMatch = path.match(/^\/api\/sos\/([^/]+)\/(receipt|open)$/);
+    if (receiptMatch && req.method === 'POST') {
+      const [, incidentId, subAction] = receiptMatch;
+      const b = await body(req);
+      let actorId = RESPONDER_ID;
+      try {
+        const u = authenticate(req);
+        actorId = u.id;
+      } catch {
+        const devId = b.deviceId;
+        const isRegistered = await isRegisteredDeviceId(devId);
+        if (!isRegistered) {
+          return json(res, 401, { error: 'Authentication or registered responder device required' });
+        }
+      }
+
+      if (subAction === 'receipt') {
+        const rec = await recordDeviceReceipt({
+          incidentId,
+          deviceId: b.deviceId || req.socket.remoteAddress,
+          responderId: actorId,
+          clientTimestamp: b.clientTimestamp
+        });
+        return json(res, 200, rec);
+      } else if (subAction === 'open') {
+        const op = await recordDeviceOpen({
+          incidentId,
+          deviceId: b.deviceId || req.socket.remoteAddress,
+          responderId: actorId,
+          clientTimestamp: b.clientTimestamp
+        });
+        return json(res, 200, op);
+      }
+    }
+
     if (path.startsWith('/api/')) {
       const u = authenticate(req);
 
@@ -275,6 +311,19 @@ const server = createServer(async (req, res) => {
       if (path === '/api/responder/devices' && req.method === 'GET') {
         if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
         return json(res, 200, await getActiveResponderDevices(u.id));
+      }
+
+      if (path === '/api/responder/device/ping' && req.method === 'POST') {
+        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
+        const b = await body(req);
+        await updateDevicePing(b.deviceId, u.id);
+        return json(res, 200, { success: true, timestamp: new Date().toISOString() });
+      }
+
+      if (path === '/api/responder/escalate' && req.method === 'POST') {
+        if (!isResponder(u) && !isAdmin(u)) return json(res, 403, { error: 'Admin or Responder only' });
+        const escalated = await checkAndEscalateIncidents(3);
+        return json(res, 200, { success: true, count: escalated.length, escalated });
       }
 
       if (path === '/api/responder/test-alert' && req.method === 'POST') {
@@ -434,6 +483,16 @@ const heartbeat = setInterval(() => {
   }
 }, 30000);
 heartbeat.unref();
+
+// Periodic escalation checker for unacknowledged incidents (every 60s)
+const escalationTimer = setInterval(async () => {
+  try {
+    await checkAndEscalateIncidents(3);
+  } catch (err) {
+    console.warn('[EscalationTimer] Notice:', err.message);
+  }
+}, 60000);
+escalationTimer.unref();
 
 await initDatabase();
 initFirebaseAdmin();

@@ -98,6 +98,8 @@ const state = {
   deviceToken: safeStorage.get('sos-fcm-token') || '',
   deviceStatus: safeStorage.get('sos-fcm-token') ? 'active' : 'pending',
   activeAlarm: null,
+  isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  lastSyncTime: '',
   users: [],
   categories: defaultCategories,
   incidents: [],
@@ -173,6 +175,109 @@ if (sosBroadcast) {
   };
 }
 
+// Offline SOS Queue Management (Local persistence & automatic recovery)
+const PENDING_QUEUE_KEY = 'sos_pending_queue';
+
+export function getPendingSosQueue() {
+  try {
+    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function savePendingSosQueue(queue) {
+  try {
+    localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(queue));
+  } catch {}
+}
+
+export function addPendingSos(item) {
+  const q = getPendingSosQueue();
+  if (!q.some(x => x.localId === item.localId || x.payload?.idempotencyKey === item.payload?.idempotencyKey)) {
+    q.push(item);
+    savePendingSosQueue(q);
+  }
+}
+
+export function removePendingSos(localId) {
+  const q = getPendingSosQueue().filter(x => x.localId !== localId && x.payload?.idempotencyKey !== localId);
+  savePendingSosQueue(q);
+}
+
+export async function flushPendingSosQueue() {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+  if (!state.token) return;
+  const queue = getPendingSosQueue();
+  if (queue.length === 0) return;
+
+  console.log(`[SOS:Offline] Online connectivity detected. Processing ${queue.length} pending queued SOS reports...`);
+
+  for (const item of [...queue]) {
+    try {
+      const created = await api('/api/sos', {
+        method: 'POST',
+        body: JSON.stringify(item.payload)
+      });
+      console.log(`[SOS:Offline] Successfully flushed queued SOS! Server Incident ID: ${created.id}`);
+      removePendingSos(item.localId);
+
+      const existingIdx = state.incidents.findIndex(i => i.id === item.localId || i.localId === item.localId);
+      if (existingIdx !== -1) {
+        state.incidents[existingIdx] = created;
+      } else {
+        state.incidents.unshift(created);
+      }
+      if (state.selected && (state.selected.id === item.localId || state.selected.localId === item.localId)) {
+        state.selected = created;
+      }
+      state.notice = `✅ Server Confirmed: Queued SOS (ID: ${created.id}) has reached the server. Responders notified!`;
+      render();
+    } catch (err) {
+      console.warn(`[SOS:Offline] Retry submission for ${item.localId} failed:`, err.message);
+      break;
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', async () => {
+    state.isOnline = true;
+    state.lastSyncTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    console.log('[SOS:Network] Connectivity restored. Synchronizing state with server...');
+    render();
+
+    if (state.user?.role === 'STUDENT') {
+      await flushPendingSosQueue();
+    }
+
+    if (isResponderUser(state.user)) {
+      await refresh();
+      // Phase 4: Immediate recovery of any unacknowledged incident missed during offline periods
+      const unacknowledged = state.incidents.filter(x => x.status === 'DEPARTMENT_NOTIFIED' || x.status === 'SOS_SENT');
+      for (const inc of unacknowledged) {
+        if (!alertedSosIds.has(inc.id)) {
+          console.log(`[SOS:OfflineRecovery] Recovered overdue emergency ${inc.id} after reconnecting!`);
+          triggerResponderEmergencyAlert(inc);
+          // Send device receipt back to backend
+          api(`/api/sos/${encodeURIComponent(inc.id)}/receipt`, {
+            method: 'POST',
+            body: JSON.stringify({ deviceId: getDeviceId(), clientTimestamp: new Date().toISOString() })
+          }).catch(() => {});
+          break;
+        }
+      }
+    }
+  });
+
+  window.addEventListener('offline', () => {
+    state.isOnline = false;
+    console.warn('[SOS:Network] Network connection dropped offline.');
+    render();
+  });
+}
+
 const labels = {
   DEPT_MEDICAL: 'Medical Department',
   DEPT_SECURITY: 'Security Department',
@@ -183,11 +288,12 @@ const labels = {
   DEPT_ADMIN: 'Emergency Administration'
 };
 
-const order = ['SOS_SENT', 'DEPARTMENT_NOTIFIED', 'ACCEPTED', 'RESPONDING', 'ARRIVED', 'RESOLVED'];
+const order = ['QUEUED_OFFLINE', 'SOS_SENT', 'DEPARTMENT_NOTIFIED', 'ACCEPTED', 'RESPONDING', 'ARRIVED', 'RESOLVED'];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pretty = s => String(s ?? '').replaceAll('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
 const message = s => ({
-  SOS_SENT: 'Your SOS has been sent.',
+  QUEUED_OFFLINE: '⚠️ Offline: SOS queued on device. Responders NOT yet notified. Waiting for network...',
+  SOS_SENT: 'Your SOS has been received by the server.',
   DEPARTMENT_NOTIFIED: 'The response team has been notified.',
   ACCEPTED: 'A responder has accepted your SOS.',
   RESPONDING: 'A responder is on the way.',
@@ -195,7 +301,12 @@ const message = s => ({
   RESOLVED: 'This incident has been resolved.',
   CANCELLED: 'This SOS was cancelled.'
 }[s] || pretty(s));
-const status = s => `<span class="status s-${String(s).toLowerCase()}">● ${pretty(s)}</span>`;
+const status = s => {
+  if (s === 'QUEUED_OFFLINE') {
+    return `<span class="status s-queued-offline" style="background:#fef3c7;color:#b45309;border:1px solid #f59e0b;font-weight:700;">⚠️ QUEUED OFFLINE</span>`;
+  }
+  return `<span class="status s-${String(s).toLowerCase()}">● ${pretty(s)}</span>`;
+};
 const roleLabel = r => ({
   STUDENT: 'Student',
   ADMIN: 'Admin',
@@ -465,9 +576,15 @@ async function refresh() {
     const isResp = isResponderUser(state.user);
     const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user.role).toUpperCase());
     const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my');
-    if (Array.isArray(incs)) state.incidents = filterDeletedIncidents(incs);
+    if (Array.isArray(incs)) {
+      state.incidents = filterDeletedIncidents(incs);
+      state.isOnline = true;
+      state.lastSyncTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
   } catch (e) {
-    // Keep existing incidents
+    if (e.isNetworkError || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      state.isOnline = false;
+    }
   }
   if (!state.deletePrompt) {
     render();
@@ -664,6 +781,12 @@ function shell(content) {
         `}
       </nav>
     </header>
+    <div class="connectivityStrip" role="status" aria-live="polite">
+      <span class="statusDot ${state.isOnline ? 'dotOnline' : 'dotOffline'}"></span>
+      <span class="statusLabel">${state.isOnline ? '🟢 Live Online' : '🔴 Offline (Disconnected)'}</span>
+      ${state.lastSyncTime ? `<span class="syncLabel">Last synced: ${esc(state.lastSyncTime)}</span>` : ''}
+      ${(typeof getPendingSosQueue === 'function' && getPendingSosQueue().length > 0) ? `<span class="pendingQueuePill">⚠️ ${getPendingSosQueue().length} Queued Offline</span>` : ''}
+    </div>
     ${state.error ? `<div class="toast" role="alert">${esc(state.error)}<button data-action="clear-error">×</button></div>` : ''}
     ${state.notice ? `<aside class="liveNotice ${state.notice.priority?.toLowerCase() || ''}" role="alert"><span class="liveDot"></span><div><small>LIVE SOS UPDATE</small><b>${esc(state.notice.message)}</b>${state.notice.location ? `<span>⌖ ${esc(state.notice.location.building)} · ${esc(state.notice.location.floor)} · ${esc(state.notice.location.room)}</span>` : ''}</div><button data-action="open-notice">View</button><button class="noticeClose" data-action="dismiss-notice" aria-label="Dismiss notification">×</button></aside>` : ''}
     <main>${content}</main>
@@ -880,7 +1003,34 @@ function confirm(c) {
 
 function active(i) {
   const c = category(i.category_id), idx = order.indexOf(i.status);
-  return `<section class="activeHero"><div class="pulse">!</div><p class="eyebrow">STUDENT DASHBOARD · SOS ACTIVE</p><h1>${esc(c?.name || 'Emergency')}</h1><p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p><div class="location">⌖ ${esc(i.location.building)} · ${esc(i.location.floor)} · ${esc(i.location.room)}</div></section><section class="panel"><div class="sectionHead"><div><p class="eyebrow">LIVE RESPONSE</p><h2>${message(i.status)}</h2></div>${status(i.status)}</div><div class="stepper">${order.map((s, n) => `<div class="${n < idx ? 'done' : n === idx ? 'current' : ''}"><span>${n < idx ? checkSvg : n + 1}</span><div><b>${pretty(s)}</b><small>${i.timeline.find(t => t.status === s) ? new Date(i.timeline.find(t => t.status === s).timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting'}</small></div></div>`).join('')}</div><button class="primary" data-incident="${i.id}">View full incident →</button></section>`;
+
+  if (i.status === 'QUEUED_OFFLINE') {
+    return `
+      <section class="activeHero" style="background:linear-gradient(135deg, #78350f, #b45309)">
+        <div class="pulse" style="background:#f59e0b">⚠️</div>
+        <p class="eyebrow" style="color:#fde68a">OFFLINE QUEUE · SOS PENDING TRANSMISSION</p>
+        <h1>${esc(c?.name || 'Emergency')}</h1>
+        <p class="incidentId">${i.id} · Queued: ${formatReportedTime(getIncidentCreatedAt(i))}</p>
+        <div class="location">⌖ ${esc(i.location.building)} · ${esc(i.location.floor)} · ${esc(i.location.room)}</div>
+      </section>
+      <section class="panel" style="border:2px solid #f59e0b">
+        <div class="sectionHead">
+          <div>
+            <p class="eyebrow" style="color:#b45309">DISPATCH STATUS: PENDING INTERNET</p>
+            <h2 style="color:#92400e">Responders Have NOT Been Notified Yet</h2>
+          </div>
+          ${status(i.status)}
+        </div>
+        <p style="color:#78350f;margin:12px 0 16px;">This emergency alert was created while offline. It is safely stored in your device queue and will automatically transmit when internet connectivity is detected.</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <button class="primary" data-retry-offline="${esc(i.localId || i.id)}" style="background:#d97706;border-color:#b45309">🔄 Retry Transmission Now</button>
+          <button class="secondary" data-incident="${i.id}">View details →</button>
+        </div>
+      </section>
+    `;
+  }
+
+  return `<section class="activeHero"><div class="pulse">!</div><p class="eyebrow">STUDENT DASHBOARD · SOS ACTIVE</p><h1>${esc(c?.name || 'Emergency')}</h1><p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p><div class="location">⌖ ${esc(i.location.building)} · ${esc(i.location.floor)} · ${esc(i.location.room)}</div></section><section class="panel"><div class="sectionHead"><div><p class="eyebrow">LIVE RESPONSE</p><h2>${message(i.status)}</h2></div>${status(i.status)}</div><div class="stepper">${order.map((s, n) => `<div class="${n < idx ? 'done' : n === idx ? 'current' : ''}"><span>${n < idx ? checkSvg : n + 1}</span><div><b>${pretty(s)}</b><small>${i.timeline && i.timeline.find(t => t.status === s) ? new Date(i.timeline.find(t => t.status === s).timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting'}</small></div></div>`).join('')}</div><button class="primary" data-incident="${i.id}">View full incident →</button></section>`;
 }
 
 function history() {
@@ -908,6 +1058,20 @@ function board() {
     ? `FCM Device Linked (${esc(state.user?.id || 'Active')})`
     : (state.deviceStatus === 'permission_needed' ? 'Push Permission Required' : 'Syncing Device FCM…');
 
+  const unacknowledged = state.incidents.filter(x => x.status === 'DEPARTMENT_NOTIFIED' || x.status === 'SOS_SENT');
+  const overdueBannerHtml = unacknowledged.length > 0 ? `
+    <div class="overdueBanner" role="alert">
+      <div class="overdueBannerLeft">
+        <span class="overdueIcon">🚨</span>
+        <div>
+          <b>⚠️ ${unacknowledged.length} PENDING / OVERDUE EMERGENCY ALERT(S)</b>
+          <small>Incident ${esc(unacknowledged[0].id)} reported at ${esc(unacknowledged[0].location?.building || 'Campus')} requires immediate response team attention.</small>
+        </div>
+      </div>
+      <button class="btnAckOverdue" data-incident="${esc(unacknowledged[0].id)}">Open ${esc(unacknowledged[0].id)} →</button>
+    </div>
+  ` : '';
+
   return `
     ${isResp ? `
       <section class="responderToolbar">
@@ -933,6 +1097,8 @@ function board() {
         </div>
       </section>
     ` : ''}
+
+    ${overdueBannerHtml}
 
     <section class="pageTitle row">
       <div>
@@ -1008,6 +1174,13 @@ function details(i) {
         ${responder ? `<button type="button" class="btnDeleteDetails" data-delete-sos="${esc(i.id)}" data-delete-mongoid="${esc(i._id || '')}" title="Permanently delete this SOS alert">🗑 Delete</button>` : ''}
       </div>
     </div>
+    ${i.status === 'QUEUED_OFFLINE' ? `
+      <div class="panel" style="background:#fffbeb;border:2px solid #f59e0b;padding:16px;margin-bottom:16px;border-radius:12px;">
+        <h3 style="color:#b45309;margin-top:0;display:flex;align-items:center;gap:8px;">⚠️ Queued Offline on Device</h3>
+        <p style="color:#92400e;margin-bottom:12px;">This emergency report is saved locally on your device and has NOT reached responders because there was no active internet connection. It will automatically submit once internet is restored.</p>
+        <button class="primary" data-retry-offline="${esc(i.localId || i.id)}" style="background:#d97706;border-color:#b45309">🔄 Retry Transmission Now</button>
+      </div>
+    ` : ''}
     <div class="detailsGrid">
       <article class="panel">
         <h2>Emergency information</h2>
@@ -1295,42 +1468,82 @@ app.addEventListener('submit', async (e) => {
     return handleLogin(e.target);
   }
   if (e.target.id === 'create-sos') {
-    const f = new FormData(e.target);
-    const cat = category(e.target.dataset.id);
+    if (state.busy) return;
     state.busy = true;
 
+    const f = new FormData(e.target);
+    const cat = category(e.target.dataset.id);
+    const idempotencyKey = crypto.randomUUID();
+    const payload = {
+      categoryId: e.target.dataset.id,
+      description: f.get('description'),
+      location: { building: f.get('building'), floor: f.get('floor'), room: f.get('room'), ...gps, source: gps ? 'GPS' : 'MANUAL' },
+      idempotencyKey
+    };
+
     console.log(`%c[SOS:Student] 1. Initiating SOS for category: ${cat?.name || 'Emergency'}`, 'color:#2563eb;font-weight:bold');
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
+      addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
+      const pendingInc = {
+        id: localId,
+        localId,
+        category_id: e.target.dataset.id,
+        student_id: state.user.id,
+        student_name: state.user.name,
+        description: payload.description || '',
+        location: payload.location,
+        priority: cat?.priority || 'HIGH',
+        status: 'QUEUED_OFFLINE',
+        serverConfirmed: false,
+        primary_department_id: cat?.primaryDepartmentId || 'DEPT_ADMIN',
+        assigned_departments: cat?.departmentIds || ['DEPT_ADMIN'],
+        created_at: new Date().toISOString(),
+        timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
+      };
+      state.incidents.unshift(pendingInc);
+      state.selected = pendingInc;
+      state.error = '⚠️ Internet connection unavailable. Your SOS is saved in your offline queue and will automatically dispatch once connectivity returns. Responders have NOT been notified yet.';
+      state.busy = false;
+      render();
+      return;
+    }
+
     try {
       let created;
       try {
         console.log('[SOS:Student] 2. Submitting SOS payload to /api/sos...');
         created = await api('/api/sos', {
           method: 'POST',
-          body: JSON.stringify({
-            categoryId: e.target.dataset.id,
-            description: f.get('description'),
-            location: { building: f.get('building'), floor: f.get('floor'), room: f.get('room'), ...gps, source: gps ? 'GPS' : 'MANUAL' },
-            idempotencyKey: crypto.randomUUID()
-          })
+          body: JSON.stringify(payload)
         });
       } catch (apiErr) {
-        console.warn('[SOS:Student] Backend /api/sos fallback:', apiErr.message);
-        const newInc = {
-          id: 'SOS-' + String(Math.floor(10000 + Math.random() * 90000)),
+        console.warn('[SOS:Student] Backend request failed (offline/unreachable):', apiErr.message);
+        const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
+        addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
+        const pendingInc = {
+          id: localId,
+          localId,
           category_id: e.target.dataset.id,
           student_id: state.user.id,
           student_name: state.user.name,
-          description: f.get('description') || '',
-          location: { building: f.get('building'), floor: f.get('floor'), room: f.get('room'), ...gps, source: gps ? 'GPS' : 'MANUAL' },
+          description: payload.description || '',
+          location: payload.location,
           priority: cat?.priority || 'HIGH',
-          status: 'DEPARTMENT_NOTIFIED',
+          status: 'QUEUED_OFFLINE',
+          serverConfirmed: false,
           primary_department_id: cat?.primaryDepartmentId || 'DEPT_ADMIN',
           assigned_departments: cat?.departmentIds || ['DEPT_ADMIN'],
           created_at: new Date().toISOString(),
-          timeline: [{ status: 'SOS_SENT', timestamp: new Date().toISOString() }, { status: 'DEPARTMENT_NOTIFIED', timestamp: new Date().toISOString() }]
+          timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
         };
-        state.incidents.unshift(newInc);
-        created = newInc;
+        state.incidents.unshift(pendingInc);
+        state.selected = pendingInc;
+        state.error = '⚠️ Server connection could not be reached. SOS saved to offline queue. Responders have NOT been notified yet. Will auto-retry when online.';
+        state.busy = false;
+        render();
+        return;
       }
 
       console.log(`%c[SOS:Student] 3. SOS created successfully! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
@@ -1346,6 +1559,7 @@ app.addEventListener('submit', async (e) => {
       }
 
       state.selected = created;
+      state.notice = `🚨 Emergency SOS Confirmed (ID: ${created.id}). Response team notified!`;
       await refresh();
     } catch (x) {
       console.error('[SOS:Student] Error submitting SOS:', x.message);
@@ -1520,24 +1734,65 @@ document.addEventListener('click', async (e) => {
     render();
   }
 
+  // Retry offline SOS
+  if (e.target.dataset.retryOffline) {
+    e.preventDefault();
+    state.busy = true;
+    state.notice = 'Attempting to submit queued SOS to server...';
+    render();
+    await flushPendingSosQueue();
+    state.busy = false;
+    render();
+    return;
+  }
+
   // Student Test Drill button
   if (a === 'student-test-drill') {
-    const drillId = 'SOS-DRILL-' + Math.floor(1000 + Math.random() * 9000);
-    console.log('%c[SOS:Student] 1. Test Drill / Send SOS button pressed by student', 'color:#0284c7;font-size:14px;font-weight:bold');
+    if (state.busy) return;
     state.busy = true;
-    try {
-      const drillPayload = {
-        categoryId: 'security',
-        description: '⚡ Test emergency drill dispatched from student account: ' + (state.user?.name || 'Student'),
-        location: {
-          building: 'Main Academic Block',
-          floor: 'Ground Floor',
-          room: 'Lobby',
-          source: 'TEST_DRILL'
-        },
-        idempotencyKey: 'drill-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
-      };
 
+    const drillPayload = {
+      categoryId: 'security',
+      description: '⚡ Test emergency drill dispatched from student account: ' + (state.user?.name || 'Student'),
+      location: {
+        building: 'Main Academic Block',
+        floor: 'Ground Floor',
+        room: 'Lobby',
+        source: 'TEST_DRILL'
+      },
+      idempotencyKey: 'drill-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
+    };
+
+    console.log('%c[SOS:Student] 1. Test Drill button pressed by student', 'color:#0284c7;font-size:14px;font-weight:bold');
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const localId = 'QUEUED-DRILL-' + Math.floor(1000 + Math.random() * 9000);
+      addPendingSos({ localId, payload: drillPayload, createdAt: new Date().toISOString() });
+      const pendingInc = {
+        id: localId,
+        localId,
+        category_id: 'security',
+        student_id: state.user.id,
+        student_name: state.user.name,
+        description: drillPayload.description,
+        location: drillPayload.location,
+        priority: 'CRITICAL',
+        status: 'QUEUED_OFFLINE',
+        serverConfirmed: false,
+        primary_department_id: 'DEPT_SECURITY',
+        assigned_departments: ['DEPT_SECURITY'],
+        created_at: new Date().toISOString(),
+        timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
+      };
+      state.incidents.unshift(pendingInc);
+      state.selected = pendingInc;
+      state.error = '⚠️ Device is offline. Drill SOS queued locally and will submit when internet connectivity returns. Responders have not been notified.';
+      state.busy = false;
+      render();
+      return;
+    }
+
+    try {
       let created;
       try {
         console.log('[SOS:Student] 2. Submitting SOS payload to /api/sos...');
@@ -1546,40 +1801,44 @@ document.addEventListener('click', async (e) => {
           body: JSON.stringify(drillPayload)
         });
       } catch (apiErr) {
-        console.warn('[SOS:Student] Backend /api/sos fallback:', apiErr.message);
-        created = {
-          id: drillId,
+        console.warn('[SOS:Student] Backend /api/sos error:', apiErr.message);
+        const localId = 'QUEUED-DRILL-' + Math.floor(1000 + Math.random() * 9000);
+        addPendingSos({ localId, payload: drillPayload, createdAt: new Date().toISOString() });
+        const pendingInc = {
+          id: localId,
+          localId,
           category_id: 'security',
           student_id: state.user.id,
           student_name: state.user.name,
           description: drillPayload.description,
           location: drillPayload.location,
           priority: 'CRITICAL',
-          status: 'DEPARTMENT_NOTIFIED',
+          status: 'QUEUED_OFFLINE',
+          serverConfirmed: false,
           primary_department_id: 'DEPT_SECURITY',
           assigned_departments: ['DEPT_SECURITY'],
           created_at: new Date().toISOString(),
-          timeline: [
-            { status: 'SOS_SENT', timestamp: new Date().toISOString() },
-            { status: 'DEPARTMENT_NOTIFIED', timestamp: new Date().toISOString() }
-          ]
+          timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
         };
-        state.incidents.unshift(created);
+        state.incidents.unshift(pendingInc);
+        state.selected = pendingInc;
+        state.error = '⚠️ Server could not be reached. Drill SOS queued locally. Responders not notified yet.';
+        state.busy = false;
+        render();
+        return;
       }
 
       console.log(`%c[SOS:Student] 3. SOS created! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
 
-      // Sync to Firebase Cloud Firestore
-      console.log('[SOS:Student] 4. Syncing emergency document to Cloud Firestore...');
       syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
 
-      // Instant broadcast across localhost tabs via BroadcastChannel
       if (sosBroadcast) {
         sosBroadcast.postMessage({ event: 'sos.created', incident: created });
         console.log('%c[SOS:RealTime] 5. Dispatched cross-tab emergency broadcast to responder', 'color:#8b5cf6;font-weight:bold');
       }
 
       state.selected = created;
+      state.notice = `🚨 Drill SOS Confirmed (ID: ${created.id}). Response team notified!`;
       await refresh();
     } catch (err) {
       console.error('[SOS:Student] Error submitting SOS:', err.message);
@@ -1661,7 +1920,10 @@ document.addEventListener('click', async (e) => {
   }
 
   if (a === 'logout') {
-    console.log('[SOS:Auth] Signing out of website session. Device registration remains active.');
+    console.log('[SOS:Auth] Signing out of website session.');
+    if (isResponderUser(state.user)) {
+      api(`/api/responder/device/${encodeURIComponent(getDeviceId())}`, { method: 'DELETE' }).catch(() => {});
+    }
     try { state.socket?.close(); } catch {}
     try { sseSource?.close(); } catch {}
     if (firestoreUnsub) {

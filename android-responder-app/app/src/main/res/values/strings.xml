@@ -1,0 +1,28 @@
+<resources>
+    <string name="app_name">Campus Emergency SOS Responder</string>
+    <string name="login_title">Emergency Responder Console</string>
+    <string name="login_subtitle">Campus Security &amp; First Response Unit</string>
+    <string name="responder_id_hint">Responder ID (e.g. RESP-1111)</string>
+    <string name="pin_hint">Authorization PIN (4 digits)</string>
+    <string name="server_url_hint">Server Base URL</string>
+    <string name="btn_login">Sign In &amp; Register Device</string>
+    <string name="login_error">Authentication failed. Check ID and PIN.</string>
+
+    <!-- Channels -->
+    <string name="channel_emergency_sos_name">Urgent Emergency SOS Alerts</string>
+    <string name="channel_emergency_sos_desc">High-priority critical sirens and lockscreen alerts for emergency responses</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Critical Alert Permissions</string>
+    <string name="onboarding_desc">To deliver instant sirens and wake your phone during emergencies, Android requires explicit authorization for the following system permissions.</string>
+    <string name="perm_notifications">1. Notification Permission</string>
+    <string name="perm_battery">2. Unrestricted Battery Usage</string>
+    <string name="perm_dnd">3. Do Not Disturb Override</string>
+    <string name="btn_continue">Continue to Dashboard</string>
+
+    <!-- Incident Detail & Actions -->
+    <string name="btn_acknowledge">Acknowledge SOS Alert</string>
+    <string name="btn_resolve">Mark Incident Resolved</string>
+    <string name="btn_silence">Silence Siren</string>
+    <string name="btn_test_drill">Trigger Test Drill Alert</string>
+</resources>

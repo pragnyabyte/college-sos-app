@@ -109,8 +109,18 @@ export async function ensurePermanentResponder() {
 
 /**
  * Registers or updates a responder device FCM token under RESP-1111.
+ * Supports multiple independent phones and web installations per responder.
  */
-export async function registerResponderDevice({ responderId = RESPONDER_ID, deviceId, fcmToken, userAgent }) {
+export async function registerResponderDevice({
+  responderId = RESPONDER_ID,
+  deviceId,
+  installationId,
+  fcmToken,
+  platform,
+  appVersion,
+  model,
+  userAgent
+}) {
   if (!deviceId || !fcmToken) {
     throw Object.assign(new Error('deviceId and fcmToken are required'), { status: 400 });
   }
@@ -118,6 +128,8 @@ export async function registerResponderDevice({ responderId = RESPONDER_ID, devi
   const db = await getDb();
   const responders = db.collection('emergency_responders');
   const now = new Date().toISOString();
+
+  const detectedPlatform = platform || (userAgent?.toLowerCase().includes('android') ? 'android' : 'web');
 
   // Atomically upsert the device into responder devices map
   await responders.findOneAndUpdate(
@@ -127,9 +139,15 @@ export async function registerResponderDevice({ responderId = RESPONDER_ID, devi
         responderId,
         [`devices.${deviceId}`]: {
           deviceId,
+          installationId: installationId || deviceId,
           fcmToken,
-          userAgent: userAgent || 'Unknown device',
+          platform: detectedPlatform,
+          appVersion: appVersion || '1.0.0',
+          model: model || (detectedPlatform === 'android' ? 'Android Device' : 'Web Browser'),
+          userAgent: userAgent || 'Unknown client',
           active: true,
+          registeredAt: now,
+          lastActiveAt: now,
           lastUpdated: now
         },
         updatedAt: now
@@ -149,13 +167,34 @@ export async function registerResponderDevice({ responderId = RESPONDER_ID, devi
     success: true,
     responderId,
     deviceId,
+    installationId: installationId || deviceId,
+    platform: detectedPlatform,
     active: true,
     lastUpdated: now
   };
 }
 
 /**
- * Unregisters or deactivates a specific device.
+ * Updates last active timestamp for a responder device.
+ */
+export async function updateDevicePing(deviceId, responderId = RESPONDER_ID) {
+  if (!deviceId) return;
+  const db = await getDb();
+  const now = new Date().toISOString();
+  await db.collection('emergency_responders').updateOne(
+    { responderId, [`devices.${deviceId}`]: { $exists: true } },
+    {
+      $set: {
+        [`devices.${deviceId}.lastActiveAt`]: now,
+        [`devices.${deviceId}.lastUpdated`]: now
+      }
+    }
+  );
+}
+
+/**
+ * Unregisters or deactivates a specific device (e.g. on phone logout).
+ * Other devices of the responder remain completely unaffected.
  */
 export async function unregisterResponderDevice(deviceId, responderId = RESPONDER_ID) {
   if (!deviceId) return;
@@ -172,19 +211,146 @@ export async function unregisterResponderDevice(deviceId, responderId = RESPONDE
 }
 
 /**
- * Gets all active registered devices for a responder.
+ * Gets active registered devices for a responder.
+ * If maskTokens is true, sensitive FCM tokens are securely redacted.
  */
-export async function getActiveResponderDevices(responderId = RESPONDER_ID) {
+export async function getActiveResponderDevices(responderId = RESPONDER_ID, maskTokens = false) {
   const db = await getDb();
   const responder = await db.collection('emergency_responders').findOne({ responderId });
   if (!responder || !responder.devices) return [];
-  return Object.values(responder.devices).filter(d => d && d.active && d.fcmToken);
+  const list = Object.values(responder.devices).filter(d => d && d.active && d.fcmToken);
+  if (!maskTokens) return list;
+  return list.map(d => ({
+    deviceId: d.deviceId,
+    installationId: d.installationId || d.deviceId,
+    platform: d.platform || 'web',
+    appVersion: d.appVersion || '1.0.0',
+    model: d.model || 'Device',
+    registeredAt: d.registeredAt || d.lastUpdated,
+    lastActiveAt: d.lastActiveAt || d.lastUpdated,
+    active: d.active,
+    fcmTokenMasked: d.fcmToken ? `${d.fcmToken.slice(0, 10)}...${d.fcmToken.slice(-6)}` : ''
+  }));
 }
 
 /**
- * Sends FCM push notification to all active registered responder devices.
+ * Checks if a device ID is registered under any emergency responder.
  */
-export async function sendEmergencySosNotification(incident) {
+export async function isRegisteredDeviceId(deviceId) {
+  if (!deviceId) return false;
+  const db = await getDb();
+  const responder = await db.collection('emergency_responders').findOne({ [`devices.${deviceId}`]: { $exists: true } });
+  return !!responder;
+}
+
+/**
+ * Logs an event in notification_audit_logs in MongoDB Atlas.
+ */
+export async function logNotificationAudit(incidentId, event, details = {}) {
+  try {
+    const db = await getDb();
+    await db.collection('notification_audit_logs').insertOne({
+      incident_id: incidentId,
+      event,
+      details,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    console.warn('[AuditLog] Notice logging audit:', e.message);
+  }
+}
+
+/**
+ * Records device delivery receipt when an Android phone receives the push notification.
+ */
+export async function recordDeviceReceipt({ incidentId, deviceId, responderId = RESPONDER_ID, clientTimestamp }) {
+  const now = new Date().toISOString();
+  await logNotificationAudit(incidentId, 'DEVICE_RECEIPT', {
+    deviceId,
+    responderId,
+    clientTimestamp: clientTimestamp || now,
+    serverTimestamp: now
+  });
+  return { success: true, incidentId, deviceId, receivedAt: now };
+}
+
+/**
+ * Records when a responder opens/views an emergency alert on their phone.
+ */
+export async function recordDeviceOpen({ incidentId, deviceId, responderId = RESPONDER_ID, clientTimestamp }) {
+  const now = new Date().toISOString();
+  await logNotificationAudit(incidentId, 'RESPONDER_OPENED', {
+    deviceId,
+    responderId,
+    clientTimestamp: clientTimestamp || now,
+    serverTimestamp: now
+  });
+  return { success: true, incidentId, deviceId, openedAt: now };
+}
+
+/**
+ * Checks for unacknowledged incidents older than escalationMinutes and triggers escalation reminder.
+ */
+export async function checkAndEscalateIncidents(escalationMinutes = 3) {
+  try {
+    const db = await getDb();
+    const threshold = new Date(Date.now() - escalationMinutes * 60 * 1000).toISOString();
+
+    const unacknowledged = await db.collection('incidents').find({
+      status: 'DEPARTMENT_NOTIFIED',
+      created_at: { $lte: threshold },
+      escalated_at: { $exists: false }
+    }).toArray();
+
+    const results = [];
+    for (const incident of unacknowledged) {
+      const now = new Date().toISOString();
+      await db.collection('incidents').updateOne(
+        { id: incident.id },
+        {
+          $set: {
+            escalated_at: now,
+            escalation_level: 1,
+            updated_at: now
+          }
+        }
+      );
+
+      await logNotificationAudit(incident.id, 'ESCALATION_TRIGGERED', {
+        escalated_at: now,
+        reason: `Unacknowledged after ${escalationMinutes} minutes`
+      });
+
+      // Send urgent escalation push
+      const escIncident = {
+        ...incident,
+        priority: 'CRITICAL',
+        description: `⚠️ [ESCALATION REMINDER - UNACKNOWLEDGED]: ${incident.description || 'Immediate response required.'}`
+      };
+      const pushRes = await sendEmergencySosNotification(escIncident, true);
+      results.push({ id: incident.id, pushRes });
+    }
+    return results;
+  } catch (err) {
+    console.warn('[Escalation] Notice checking escalation:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Helper to pause execution for backoff delay
+ */
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Sends high-priority emergency FCM push notifications to active registered responder devices.
+ * Uses targeted platform payloads:
+ * - Android: High-priority data message ensuring SosFirebaseMessagingService.onMessageReceived
+ *   is invoked even when screen is locked or app is backgrounded.
+ * - Web: notification + webpush headers with requireInteraction, renotify, and vibration.
+ * Includes bounded exponential backoff for transient FCM transport errors.
+ */
+export async function sendEmergencySosNotification(incident, isEscalation = false) {
   const db = await getDb();
   let devices = [];
   try {
@@ -195,97 +361,174 @@ export async function sendEmergencySosNotification(incident) {
     devices = await getActiveResponderDevices(RESPONDER_ID);
   }
   if (!devices || devices.length === 0) {
-    console.log(`[FCM] No active registered responder devices. Skipping push.`);
-    return { deliveredCount: 0, totalDevices: 0 };
+    console.log(`[FCM] No active registered responder devices found in database. Push skipped.`);
+    await logNotificationAudit(incident.id, 'NO_DEVICES_REGISTERED', {
+      timestamp: new Date().toISOString(),
+      note: 'No responder devices currently registered or active'
+    });
+    return { fcmAcceptedCount: 0, fcmFailedCount: 0, totalDevices: 0, deliveredCount: 0 };
   }
-
-  const tokens = devices.map(d => d.fcmToken).filter(Boolean);
-  if (tokens.length === 0) return { deliveredCount: 0, totalDevices: 0 };
 
   initFirebaseAdmin();
 
-  const title = `🚨 EMERGENCY SOS: ${incident.id} (${incident.priority})`;
+  const title = isEscalation
+    ? `⚠️ URGENT REMINDER: SOS ${incident.id} UNACKNOWLEDGED`
+    : `🚨 EMERGENCY SOS: ${incident.id} (${incident.priority})`;
   const body = `${incident.student_name} reported ${incident.category_id || 'Emergency'} at ${incident.location?.building || 'Campus'}, ${incident.location?.floor || ''} ${incident.location?.room || ''}`.trim();
   const clickUrl = `/responder?incidentId=${encodeURIComponent(incident.id)}`;
 
-  const messagePayload = {
-    notification: {
-      title,
-      body
-    },
-    data: {
-      id: String(incident.id),
-      sosId: String(incident.id),
-      categoryId: String(incident.category_id || ''),
-      priority: String(incident.priority || 'HIGH'),
-      studentName: String(incident.student_name || ''),
-      studentId: String(incident.student_id || ''),
-      location: `${incident.location?.building || ''} ${incident.location?.floor || ''} ${incident.location?.room || ''}`.trim(),
-      building: String(incident.location?.building || ''),
-      floor: String(incident.location?.floor || ''),
-      room: String(incident.location?.room || ''),
-      description: String(incident.description || ''),
-      timestamp: String(incident.created_at || new Date().toISOString()),
-      click_action: clickUrl,
-      url: clickUrl
-    },
-    webpush: {
-      headers: {
-        Urgency: 'high'
-      },
-      fcmOptions: {
-        link: clickUrl
-      },
-      notification: {
-        title,
-        body,
-        icon: '/favicon.ico',
-        badge: '/favicon.ico',
-        tag: `sos-alert-${incident.id}`,
-        requireInteraction: true,
-        renotify: true,
-        vibrate: [500, 250, 500, 250, 500, 250, 500],
-        actions: [
-          { action: 'open', title: 'Open Incident' }
-        ]
-      }
-    }
+  const commonData = {
+    id: String(incident.id),
+    sosId: String(incident.id),
+    categoryId: String(incident.category_id || ''),
+    priority: String(incident.priority || 'HIGH'),
+    studentName: String(incident.student_name || ''),
+    studentId: String(incident.student_id || ''),
+    location: `${incident.location?.building || ''} ${incident.location?.floor || ''} ${incident.location?.room || ''}`.trim(),
+    building: String(incident.location?.building || ''),
+    floor: String(incident.location?.floor || ''),
+    room: String(incident.location?.room || ''),
+    description: String(incident.description || ''),
+    timestamp: String(incident.created_at || new Date().toISOString()),
+    isEscalation: String(isEscalation),
+    click_action: clickUrl,
+    url: clickUrl
   };
 
-  let deliveredCount = 0;
+  // Group devices by platform
+  const androidDevices = devices.filter(d => d.platform === 'android');
+  const webDevices = devices.filter(d => d.platform !== 'android');
+
+  let totalAccepted = 0;
+  let totalFailed = 0;
   const invalidTokens = [];
 
-  try {
-    const messaging = getMessaging();
-    const response = await messaging.sendEachForMulticast({
-      tokens,
-      ...messagePayload
-    });
+  // Helper to execute multicast with bounded exponential backoff
+  async function dispatchBatch(tokens, payload, platformName) {
+    if (tokens.length === 0) return { accepted: 0, failed: 0 };
 
-    response.responses.forEach((res, idx) => {
-      if (res.success) {
-        deliveredCount++;
-      } else {
-        const errCode = res.error?.code || '';
-        console.warn(`[FCM] Push delivery failed for token ${tokens[idx].slice(0, 15)}...: ${errCode} - ${res.error?.message}`);
-        if (
-          errCode === 'messaging/registration-token-not-registered' ||
-          errCode === 'messaging/invalid-registration-token' ||
-          errCode === 'messaging/invalid-argument'
-        ) {
-          invalidTokens.push(tokens[idx]);
+    let accepted = 0;
+    let failed = 0;
+    let tokensToAttempt = [...tokens];
+    let attempt = 0;
+    const maxRetries = 2;
+    const backoffMs = [500, 1500];
+
+    const messaging = getMessaging();
+
+    while (tokensToAttempt.length > 0 && attempt <= maxRetries) {
+      if (attempt > 0) {
+        const delay = backoffMs[attempt - 1] || 1500;
+        console.log(`[FCM] Retrying ${tokensToAttempt.length} ${platformName} token(s) after transient failure (attempt ${attempt}/${maxRetries} in ${delay}ms)...`);
+        await sleep(delay);
+      }
+
+      try {
+        const res = await messaging.sendEachForMulticast({
+          tokens: tokensToAttempt,
+          ...payload
+        });
+
+        const retryTokens = [];
+
+        res.responses.forEach((resp, idx) => {
+          const tok = tokensToAttempt[idx];
+          if (resp.success) {
+            accepted++;
+          } else {
+            const errCode = resp.error?.code || '';
+            const errMsg = resp.error?.message || '';
+            console.warn(`[FCM] ${platformName} push error for token ${tok.slice(0, 12)}...: ${errCode} - ${errMsg}`);
+
+            // Transient error check
+            const isTransient = [
+              'messaging/server-unavailable',
+              'messaging/internal-error',
+              'messaging/quota-exceeded',
+              'messaging/unavailable'
+            ].includes(errCode);
+
+            if (isTransient && attempt < maxRetries) {
+              retryTokens.push(tok);
+            } else {
+              failed++;
+              if (
+                errCode === 'messaging/registration-token-not-registered' ||
+                errCode === 'messaging/invalid-registration-token' ||
+                errCode === 'messaging/invalid-argument'
+              ) {
+                invalidTokens.push(tok);
+              }
+            }
+          }
+        });
+
+        tokensToAttempt = retryTokens;
+      } catch (fatalSendErr) {
+        console.warn(`[FCM] Fatal error sending ${platformName} multicast:`, fatalSendErr.message);
+        if (attempt >= maxRetries) {
+          failed += tokensToAttempt.length;
+          break;
+        }
+        // Retry all on transport failure
+      }
+
+      attempt++;
+    }
+
+    return { accepted, failed };
+  }
+
+  // 1. Send Android payload: Data-first message to guarantee onMessageReceived execution
+  if (androidDevices.length > 0) {
+    const androidTokens = androidDevices.map(d => d.fcmToken).filter(Boolean);
+    const androidPayload = {
+      data: commonData,
+      android: {
+        priority: 'high',
+        ttl: 86400 * 1000 // 24 hours retention
+      }
+    };
+    const res = await dispatchBatch(androidTokens, androidPayload, 'Android');
+    totalAccepted += res.accepted;
+    totalFailed += res.failed;
+  }
+
+  // 2. Send Web payload: notification + webpush headers for service worker display
+  if (webDevices.length > 0) {
+    const webTokens = webDevices.map(d => d.fcmToken).filter(Boolean);
+    const webPayload = {
+      notification: { title, body },
+      data: commonData,
+      webpush: {
+        headers: { Urgency: 'high' },
+        fcmOptions: { link: clickUrl },
+        notification: {
+          title,
+          body,
+          icon: '/favicon.ico',
+          badge: '/favicon.ico',
+          tag: `sos-alert-${incident.id}`,
+          requireInteraction: true,
+          renotify: true,
+          vibrate: [500, 250, 500, 250, 500, 250, 500],
+          actions: [{ action: 'open', title: 'Open Incident' }]
         }
       }
-    });
+    };
+    const res = await dispatchBatch(webTokens, webPayload, 'Web');
+    totalAccepted += res.accepted;
+    totalFailed += res.failed;
+  }
 
-    // Cleanup only invalid tokens
-    if (invalidTokens.length > 0) {
-      const db = await getDb();
+  // Deactivate expired or invalid tokens in MongoDB
+  if (invalidTokens.length > 0) {
+    try {
       for (const invToken of invalidTokens) {
         const devEntry = devices.find(d => d.fcmToken === invToken);
         if (devEntry?.deviceId) {
           await db.collection('emergency_responders').updateOne(
-            { responderId: RESPONDER_ID },
+            { responderId: devEntry.responderId || RESPONDER_ID },
             {
               $set: {
                 [`devices.${devEntry.deviceId}.active`]: false,
@@ -297,14 +540,32 @@ export async function sendEmergencySosNotification(incident) {
           console.log(`[FCM] Deactivated expired token for device ${devEntry.deviceId}`);
         }
       }
+    } catch (e) {
+      console.warn('[FCM] Token deactivation notice:', e.message);
     }
-
-    console.log(`[FCM] Sent emergency SOS ${incident.id} to ${deliveredCount}/${tokens.length} devices.`);
-    return { deliveredCount, totalDevices: tokens.length };
-  } catch (err) {
-    console.warn('[FCM] Multicast send notice (Check Service Account):', err.message);
-    return { deliveredCount: 0, totalDevices: tokens.length, error: err.message };
   }
+
+  // Explicit server-side audit logging: FCM acceptance is transport only, NOT physical delivery proof
+  await logNotificationAudit(incident.id, 'FCM_GATEWAY_DISPATCH', {
+    fcmAcceptedCount: totalAccepted,
+    fcmFailedCount: totalFailed,
+    totalTargetDevices: devices.length,
+    androidDevices: androidDevices.length,
+    webDevices: webDevices.length,
+    invalidTokensRemoved: invalidTokens.length,
+    isEscalation,
+    transportStatus: 'ACCEPTED_BY_FCM_GATEWAY',
+    verificationNotice: 'FCM gateway accepted transport. Physical device receipt and sound playback are pending until device posts receipt.'
+  });
+
+  console.log(`[FCM] Dispatch completed for ${incident.id}: ${totalAccepted}/${devices.length} tokens accepted by FCM server (${totalFailed} failed, ${invalidTokens.length} invalidated). Physical phone receipt pending.`);
+
+  return {
+    fcmAcceptedCount: totalAccepted,
+    fcmFailedCount: totalFailed,
+    totalDevices: devices.length,
+    deliveredCount: totalAccepted // Backwards-compatibility alias
+  };
 }
 
 /**

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "888750165100",
+    "project_id": "college-sos-app-26aec",
+    "storage_bucket": "college-sos-app-26aec.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:888750165100:android:c5717332b893a6dc06dc49",
+        "android_client_info": {
+          "package_name": "com.emergencysos.responder"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBsijDOP3woYoWK0An37rYTDu0zCWdeYhg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
