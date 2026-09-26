@@ -113,7 +113,12 @@ export async function syncResponderDeviceWithBackend(token, authToken) {
   if (!token) return;
   const deviceId = getDeviceId();
   try {
-    const res = await fetch('/api/responder/device', {
+    const rawApiUrl = (import.meta.env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
+    const isStaticHost = typeof location !== 'undefined' && (location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com'));
+    if (isStaticHost && !rawApiUrl) return;
+
+    const endpoint = rawApiUrl ? `${rawApiUrl}/api/responder/device` : '/api/responder/device';
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

@@ -9,13 +9,60 @@ import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, l
 import { initFirebaseAdmin, ensurePermanentResponder, registerResponderDevice, unregisterResponderDevice, getActiveResponderDevices, sendEmergencySosNotification, syncIncidentToFirestoreAdmin, deleteIncidentFromFirestoreAdmin, RESPONDER_ID } from './fcm.js';
 
 const port = Number(process.env.PORT || 4000), limits = new Map();
-const json = (res, status, data) => {
+
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://college-sos-app-26aec.web.app',
+  'https://college-sos-app-26aec.firebaseapp.com',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4000',
+  'http://127.0.0.1:4000',
+  'http://localhost:3000'
+];
+
+export function isOriginAllowed(origin) {
+  if (!origin) return false;
+  const envOrigins = (process.env.ALLOWED_ORIGINS || process.env.CLIENT_ORIGIN || '')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean);
+  if (envOrigins.includes(origin)) return true;
+  if (DEFAULT_ALLOWED_ORIGINS.includes(origin)) return true;
+
+  try {
+    const u = new URL(origin);
+    if (['localhost', '127.0.0.1'].includes(u.hostname)) return true;
+    if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(u.hostname)) return true;
+    if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(u.hostname)) return true;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(u.hostname)) return true;
+  } catch {}
+
+  return false;
+}
+
+export function getCorsHeaders(req) {
+  const origin = req?.headers?.origin;
+  if (origin && isOriginAllowed(origin)) {
+    return {
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Credentials': 'true',
+      'Vary': 'Origin'
+    };
+  }
+  return {};
+}
+
+const json = (res, status, data, extraHeaders = {}) => {
+  const req = res.req;
+  const cors = req ? getCorsHeaders(req) : {};
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
-    'referrer-policy': 'no-referrer'
+    'referrer-policy': 'no-referrer',
+    ...cors,
+    ...extraHeaders
   });
   res.end(JSON.stringify(data));
 };
@@ -56,10 +103,28 @@ const eventPayload = (event, incident) => ({
 
 const server = createServer(async (req, res) => {
   try {
+    const origin = req.headers.origin;
+    if (req.method === 'OPTIONS') {
+      if (origin && isOriginAllowed(origin)) {
+        res.writeHead(204, {
+          'Access-Control-Allow-Origin': origin,
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin',
+          'Access-Control-Allow-Credentials': 'true',
+          'Access-Control-Max-Age': '86400',
+          'Vary': 'Origin',
+          'Content-Length': '0'
+        });
+        return res.end();
+      }
+      res.writeHead(403, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'CORS origin not allowed' }));
+    }
+
     rate(req);
     const url = new URL(req.url || '/', 'http://local'), path = url.pathname;
 
-    if (path === '/api/health') return json(res, 200, { status: 'ok', websocket: '/ws', time: new Date().toISOString() });
+    if (path === '/api/health' || path === '/health') return json(res, 200, { status: 'ok', websocket: '/ws', time: new Date().toISOString() });
 
     if (path === '/api/config') {
       return json(res, 200, {
@@ -156,7 +221,7 @@ const server = createServer(async (req, res) => {
         'content-type': 'text/event-stream; charset=utf-8',
         'cache-control': 'no-cache, no-transform',
         'connection': 'keep-alive',
-        'access-control-allow-origin': '*'
+        ...getCorsHeaders(req)
       });
       res.write(`data: ${JSON.stringify({ event: 'connection.ready', message: 'SSE stream connected', user: uStream.id })}\n\n`);
 
@@ -247,7 +312,11 @@ const server = createServer(async (req, res) => {
 
       if (path === '/api/sos/export.csv' && req.method === 'GET') {
         const csv = await exportCsv(u);
-        res.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="sos-incidents.csv"' });
+        res.writeHead(200, {
+          'content-type': 'text/csv',
+          'content-disposition': 'attachment; filename="sos-incidents.csv"',
+          ...getCorsHeaders(req)
+        });
         return res.end(csv);
       }
 
@@ -329,6 +398,12 @@ function broadcast(event) {
 
 server.on('upgrade', (req, socket, head) => {
   try {
+    const origin = req.headers.origin;
+    if (origin && !isOriginAllowed(origin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const url = new URL(req.url || '/', 'http://local');
     if (url.pathname !== '/ws') throw new Error('Unknown WebSocket route');
     const protocols = String(req.headers['sec-websocket-protocol'] || '').split(',').map(x => x.trim()), token = protocols[1];
@@ -364,4 +439,4 @@ await initDatabase();
 initFirebaseAdmin();
 await ensurePermanentResponder();
 
-server.listen(port, () => console.log(`SOS server listening on http://localhost:${port} with WebSocket notifications at /ws`));
+server.listen(port, '0.0.0.0', () => console.log(`SOS server listening on port ${port} with WebSocket notifications at /ws`));

@@ -14,6 +14,32 @@ import {
   getAudioState
 } from './audio.js';
 
+// Centralized API Base URL configuration:
+// In production, reads VITE_API_URL if configured (e.g. deployed Railway backend URL).
+// In development, or if VITE_API_URL is unset, defaults to empty string so requests are routed
+// through Vite dev server's proxy (to local backend) on localhost or mobile phone on Wi-Fi.
+const RAW_API_URL = (import.meta.env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
+
+export function getApiBaseUrl() {
+  return RAW_API_URL;
+}
+
+export function buildApiUrl(path) {
+  const base = getApiBaseUrl();
+  const normalizedPath = path.startsWith('/') ? path : '/' + path;
+  return base ? `${base}${normalizedPath}` : normalizedPath;
+}
+
+export function getWebSocketUrl() {
+  if (RAW_API_URL) {
+    const wsScheme = RAW_API_URL.startsWith('https') ? 'wss' : 'ws';
+    const wsHost = RAW_API_URL.replace(/^https?:\/\//, '');
+    return `${wsScheme}://${wsHost}/ws`;
+  }
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${scheme}://${location.host}/ws`;
+}
+
 const app = document.querySelector('#app');
 
 const defaultCategories = [
@@ -326,8 +352,11 @@ async function initResponderPush() {
   try {
     let vapidKey = '';
     try {
-      const cfg = await fetch('/api/config').then(r => r.json());
-      vapidKey = cfg.vapidKey || '';
+      const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
+      if (!isStaticHost || RAW_API_URL) {
+        const cfg = await fetch(buildApiUrl('/api/config')).then(r => r.json());
+        vapidKey = cfg.vapidKey || '';
+      }
     } catch {}
 
     await setupResponderFCM({
@@ -378,7 +407,15 @@ async function initResponderPush() {
 
 async function api(path, options = {}) {
   try {
-    const r = await fetch(path, {
+    const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
+    if (isStaticHost && !RAW_API_URL) {
+      const err = new Error('Backend server is unavailable. Please try again.');
+      err.isNetworkError = true;
+      throw err;
+    }
+
+    const fullUrl = buildApiUrl(path);
+    const r = await fetch(fullUrl, {
       ...options,
       headers: {
         'content-type': 'application/json',
@@ -387,9 +424,24 @@ async function api(path, options = {}) {
       }
     });
     const ct = r.headers.get('content-type') || '';
-    if (ct.includes('text/html')) throw new Error('API offline');
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Request failed');
+    if (ct.includes('text/html') || r.status >= 500) {
+      const err = new Error('Backend server is unavailable. Please try again.');
+      err.isNetworkError = true;
+      throw err;
+    }
+    let data;
+    try {
+      data = await r.json();
+    } catch {
+      const err = new Error('Backend server is unavailable. Please try again.');
+      err.isNetworkError = true;
+      throw err;
+    }
+    if (!r.ok) {
+      const err = new Error(data.error || 'Request failed');
+      err.field = data.field;
+      throw err;
+    }
     return data;
   } catch (e) {
     if (options.method && options.method.toUpperCase() !== 'GET') {
@@ -426,11 +478,14 @@ async function refresh() {
 let sseSource = null;
 function connectSseStream() {
   if (!state.token) return;
+  const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com') || location.protocol === 'file:';
+  if (isStaticHost && !RAW_API_URL) return;
   if (sseSource && sseSource.readyState !== EventSource.CLOSED) return;
 
   try {
-    console.log('%c[SOS:RealTime] Connecting SSE stream at /api/sos/stream...', 'color:#0284c7');
-    sseSource = new EventSource(`/api/sos/stream?token=${encodeURIComponent(state.token)}`);
+    const sseUrl = buildApiUrl(`/api/sos/stream?token=${encodeURIComponent(state.token)}`);
+    console.log('%c[SOS:RealTime] Connecting SSE stream at ' + sseUrl, 'color:#0284c7');
+    sseSource = new EventSource(sseUrl);
     sseSource.onmessage = (e) => {
       try {
         const payload = JSON.parse(e.data);
@@ -480,11 +535,10 @@ function connectSseStream() {
 function connectSocket() {
   if (!state.token) return;
   const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com') || location.protocol === 'file:';
-  if (isStaticHost) return;
+  if (isStaticHost && !RAW_API_URL) return;
   if (state.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(state.socket.readyState)) return;
-  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   try {
-    const ws = new WebSocket(`${scheme}://${location.host}/ws`, ['sos', state.token]);
+    const ws = new WebSocket(getWebSocketUrl(), ['sos', state.token]);
     state.socket = ws;
     ws.addEventListener('open', () => {
       state.retry = 0;
@@ -1119,12 +1173,32 @@ async function handleLogin(formEl) {
     console.log(`[SOS:Auth] Logging in as ${name} (${regdNo}) with role: ${role}`);
     let d;
     try {
-      const res = await fetch('/api/auth/login', {
+      const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
+      if (isStaticHost && !RAW_API_URL) {
+        const netErr = new Error('Backend server is unavailable. Please try again.');
+        netErr.isNetworkError = true;
+        throw netErr;
+      }
+
+      const res = await fetch(buildApiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, regdNo, role, pin })
       });
-      const data = await res.json();
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('text/html') || res.status >= 500) {
+        const netErr = new Error('Backend server is unavailable. Please try again.');
+        netErr.isNetworkError = true;
+        throw netErr;
+      }
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        const netErr = new Error('Backend server is unavailable. Please try again.');
+        netErr.isNetworkError = true;
+        throw netErr;
+      }
       if (!res.ok) {
         const err = new Error(data.error || 'Authentication failed');
         err.field = data.field;
@@ -1132,7 +1206,21 @@ async function handleLogin(formEl) {
       }
       d = data;
     } catch (apiErr) {
-      if (isResp) throw apiErr;
+      const isNetwork = apiErr.isNetworkError ||
+        apiErr.name === 'TypeError' ||
+        String(apiErr.message || '').includes('fetch') ||
+        String(apiErr.message || '').includes('Network') ||
+        String(apiErr.message || '').includes('unavailable') ||
+        String(apiErr.message || '').includes('offline');
+
+      if (isResp) {
+        if (isNetwork) {
+          const connErr = new Error('Backend server is unavailable. Please try again.');
+          connErr.isNetworkError = true;
+          throw connErr;
+        }
+        throw apiErr;
+      }
       console.warn('API fallback to local session:', apiErr.message);
       d = {
         token: 'session-' + Date.now(),
@@ -1163,10 +1251,24 @@ async function handleLogin(formEl) {
     render();
   } catch (err) {
     console.error('[SOS:Auth] Authentication error:', err.message);
-    const msg = err.message || 'Authentication failed';
+    const isNetwork = err.isNetworkError ||
+      err.name === 'TypeError' ||
+      String(err.message || '').includes('fetch') ||
+      String(err.message || '').includes('Network') ||
+      String(err.message || '').includes('unavailable') ||
+      String(err.message || '').includes('offline') ||
+      String(err.message || '').includes('JSON') ||
+      String(err.message || '').includes('<!doctype');
+
+    const msg = isNetwork
+      ? 'Backend server is unavailable. Please try again.'
+      : (err.message || 'Authentication failed');
+
     showLoginError(msg);
 
-    if (isResp) {
+    // Keep registration ID and PIN intact during temporary network errors.
+    // If credentials are incorrect from backend, clear only the incorrect fields.
+    if (isResp && !isNetwork) {
       if (err.field === 'registration_number' || msg.toLowerCase().includes('registration') || msg.toLowerCase().includes('regd')) {
         if (regdInput) {
           regdInput.value = '';
@@ -1545,7 +1647,7 @@ document.addEventListener('click', async (e) => {
     }
     syncIncidentToFirestore(testInc).catch(() => {});
     try {
-      await fetch('/api/responder/test-alert', {
+      await fetch(buildApiUrl('/api/responder/test-alert'), {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${state.token}` }
       });
@@ -1648,11 +1750,21 @@ app.addEventListener('input', (e) => {
 });
 
 // Initialize categories and app state
-fetch('/api/categories').then(r => r.json()).then(async (c) => {
-  state.categories = c;
+const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
+const catFetchPromise = (!isStaticHost || RAW_API_URL)
+  ? fetch(buildApiUrl('/api/categories')).then(r => {
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('text/html') || !r.ok) throw new Error('Offline');
+      return r.json();
+    })
+  : Promise.reject(new Error('Static host without backend'));
+
+catFetchPromise.then(async (c) => {
+  state.categories = Array.isArray(c) && c.length ? c : defaultCategories;
   if (state.user) await refresh();
   else render();
 }).catch(() => {
+  state.categories = defaultCategories;
   if (state.user) refresh();
   else render();
 });
