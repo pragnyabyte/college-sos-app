@@ -6,7 +6,35 @@ import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, veri
 import { categories } from './domain.js';
 import { initDatabase } from './db.js';
 import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, listIncidents, stats, updateIncidentLocation } from './service.js';
-import { initFirebaseAdmin, ensurePermanentResponder, registerResponderDevice, unregisterResponderDevice, getActiveResponderDevices, isRegisteredDeviceId, sendEmergencySosNotification, syncIncidentToFirestoreAdmin, deleteIncidentFromFirestoreAdmin, recordDeviceReceipt, recordDeviceOpen, updateDevicePing, checkAndEscalateIncidents, RESPONDER_ID } from './fcm.js';
+import {
+  initFirebaseAdmin,
+  ensurePermanentResponder,
+  registerResponderDevice,
+  unregisterResponderDevice,
+  getActiveResponderDevices,
+  isRegisteredDeviceId,
+  sendEmergencySosNotification,
+  syncIncidentToFirestoreAdmin,
+  deleteIncidentFromFirestoreAdmin,
+  recordDeviceReceipt,
+  recordDeviceOpen,
+  updateDevicePing,
+  checkAndEscalateIncidents,
+  logNotificationAudit,
+  RESPONDER_ID
+} from './fcm.js';
+import {
+  sendEmergencySms,
+  sendEmergencyVoiceCall,
+  generateEmergencyTwiML,
+  handleTwiMLGather,
+  processEscalations,
+  startEscalationWorker,
+  stopEscalationWorker,
+  ALERT_STATUSES,
+  formatLocationLink,
+  getRegisteredResponderPhones
+} from './escalation.js';
 
 const port = Number(process.env.PORT || 4000), limits = new Map();
 
@@ -67,15 +95,35 @@ const json = (res, status, data, extraHeaders = {}) => {
   res.end(JSON.stringify(data));
 };
 
+const xml = (res, status, xmlString) => {
+  res.writeHead(status, {
+    'content-type': 'application/xml; charset=utf-8',
+    'cache-control': 'no-store'
+  });
+  res.end(xmlString);
+};
+
 const body = async (req) => {
   let raw = '';
   for await (const c of req) {
     raw += c;
-    if (raw.length > 30_000) throw Object.assign(new Error('Payload too large'), { status: 413 });
+    if (raw.length > 50_000) throw Object.assign(new Error('Payload too large'), { status: 413 });
+  }
+  if (!raw) return {};
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    try {
+      return Object.fromEntries(new URLSearchParams(raw));
+    } catch {
+      return {};
+    }
   }
   try {
-    return raw ? JSON.parse(raw) : {};
+    return JSON.parse(raw);
   } catch {
+    try {
+      if (raw.includes('=')) return Object.fromEntries(new URLSearchParams(raw));
+    } catch {}
     throw Object.assign(new Error('Invalid JSON'), { status: 400 });
   }
 };
@@ -285,6 +333,77 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // Twilio Voice TwiML webhook (Incident ID parameter)
+    const twimlCallMatch = path.match(/^\/api\/responder\/twiml\/emergency-call\/([^/]+)$/);
+    if (twimlCallMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const [, incId] = twimlCallMatch;
+      try {
+        const db = await initDatabase();
+        const inc = await db.collection('incidents').findOne({ id: incId });
+        if (!inc) {
+          return xml(res, 404, '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Incident not found.</Say><Hangup/></Response>');
+        }
+        const twiml = generateEmergencyTwiML(inc);
+        return xml(res, 200, twiml);
+      } catch (err) {
+        return xml(res, 500, '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Error loading emergency alert.</Say><Hangup/></Response>');
+      }
+    }
+
+    // Twilio Gather IVR Response webhook (press 1 to acknowledge)
+    const twimlGatherMatch = path.match(/^\/api\/responder\/twiml\/gather-response\/([^/]+)$/);
+    if (twimlGatherMatch && req.method === 'POST') {
+      const [, incId] = twimlGatherMatch;
+      const b = await body(req);
+      const digits = b.Digits || b.digits || '';
+      const caller = b.From || b.from || b.Caller || 'Emergency Responder Phone';
+      const twimlResponse = await handleTwiMLGather(incId, digits, caller, broadcast);
+      return xml(res, 200, twimlResponse);
+    }
+
+    // Twilio SMS Delivery Status Callback
+    if (path === '/api/responder/twilio/sms-status-callback' && req.method === 'POST') {
+      const b = await body(req);
+      const smsSid = b.MessageSid || b.SmsSid;
+      const status = b.MessageStatus || b.SmsStatus;
+      const to = b.To || '';
+      if (status === 'delivered') {
+        await logNotificationAudit(b.incidentId || 'SMS_BROADCAST', ALERT_STATUSES.DEVICE_DELIVERY_CONFIRMED, {
+          channel: 'SMS',
+          provider: 'twilio',
+          messageSid: smsSid,
+          to: to.slice(0, 4) + '***' + to.slice(-3),
+          providerStatus: status,
+          timestamp: new Date().toISOString()
+        });
+      }
+      return json(res, 200, { received: true, sid: smsSid, status });
+    }
+
+    // Twilio Call Status Callback
+    if (path === '/api/responder/twilio/call-status-callback' && req.method === 'POST') {
+      const b = await body(req);
+      const callSid = b.CallSid;
+      const status = b.CallStatus;
+      const to = b.To || '';
+      await logNotificationAudit(b.incidentId || 'VOICE_CALL_BROADCAST', `VOICE_CALL_${(status || 'UNKNOWN').toUpperCase()}`, {
+        channel: 'VOICE_CALL',
+        provider: 'twilio',
+        callSid,
+        to: to.slice(0, 4) + '***' + to.slice(-3),
+        providerStatus: status,
+        duration: b.CallDuration || '0',
+        timestamp: new Date().toISOString()
+      });
+      return json(res, 200, { received: true, sid: callSid, status });
+    }
+
+    // Public / Durable Escalation Trigger Endpoint (Callable by Cloud Scheduler, cron, or testing)
+    if ((path === '/api/escalation/process' || path === '/api/escalation/tick') && req.method === 'POST') {
+      const results = await processEscalations(broadcast);
+      return json(res, 200, { success: true, ...results, timestamp: new Date().toISOString() });
+    }
+
     if (path.startsWith('/api/')) {
       const u = authenticate(req);
 
@@ -335,8 +454,30 @@ const server = createServer(async (req, res) => {
 
       if (path === '/api/responder/escalate' && req.method === 'POST') {
         if (!isResponder(u) && !isAdmin(u)) return json(res, 403, { error: 'Admin or Responder only' });
-        const escalated = await checkAndEscalateIncidents(3);
-        return json(res, 200, { success: true, count: escalated.length, escalated });
+        const results = await processEscalations(broadcast);
+        return json(res, 200, { success: true, ...results });
+      }
+
+      if (path === '/api/responder/phone' && req.method === 'POST') {
+        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
+        const b = await body(req);
+        const rawPhone = String(b.phone || b.phoneNumber || '').trim();
+        if (!rawPhone || !/^\+?[1-9]\d{7,14}$/.test(rawPhone.replace(/[\s\-()]/g, ''))) {
+          return json(res, 400, { error: 'Valid E.164 phone number is required (e.g. +1234567890)' });
+        }
+        const db = await initDatabase();
+        await db.collection('emergency_responders').updateOne(
+          { responderId: u.id },
+          { $set: { phone: rawPhone, updatedAt: new Date().toISOString() } },
+          { upsert: true }
+        );
+        return json(res, 200, { success: true, responderId: u.id, phone: rawPhone });
+      }
+
+      if (path === '/api/responder/phones' && req.method === 'GET') {
+        if (!isResponder(u) && !isAdmin(u)) return json(res, 403, { error: 'Access denied: Responder or Admin required' });
+        const phones = await getRegisteredResponderPhones();
+        return json(res, 200, { phones });
       }
 
       if (path === '/api/responder/test-alert' && req.method === 'POST') {
@@ -382,10 +523,26 @@ const server = createServer(async (req, res) => {
         return res.end(csv);
       }
 
-      const match = path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel|location))?$/);
+      const match = path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel|location|verify-sound|notification-audit))?$/);
       if (match) {
         const [, id, action] = match;
         if (req.method === 'GET' && !action) return json(res, 200, await getIncident(id, u));
+        if (action === 'verify-sound' && req.method === 'POST') {
+          const b = await body(req);
+          await logNotificationAudit(id, ALERT_STATUSES.AUDIBLE_SOUND_VERIFIED, {
+            deviceId: b.deviceId || 'manual-test-device',
+            verifiedBy: u.id,
+            verifiedByName: u.name,
+            notes: b.notes || 'Audible emergency siren sound playback verified on physical device',
+            timestamp: new Date().toISOString()
+          });
+          return json(res, 200, { success: true, incidentId: id, status: ALERT_STATUSES.AUDIBLE_SOUND_VERIFIED });
+        }
+        if (action === 'notification-audit' && req.method === 'GET') {
+          const db = await initDatabase();
+          const logs = await db.collection('notification_audit_logs').find({ incident_id: id }).sort({ timestamp: 1 }).toArray();
+          return json(res, 200, { incidentId: id, totalEvents: logs.length, events: logs });
+        }
         if (req.method === 'DELETE' && !action) {
           console.log(`[SOS:Backend] Received request to delete incident ${id} by ${u.name} (${u.id})`);
           const resDel = await deleteIncident(id, u, req.socket.remoteAddress);
@@ -405,6 +562,14 @@ const server = createServer(async (req, res) => {
         if (req.method === 'POST' && action) {
           const map = { accept: 'ACCEPTED', respond: 'RESPONDING', arrive: 'ARRIVED', resolve: 'RESOLVED', cancel: 'CANCELLED' };
           const result = await changeStatus(id, map[action], await body(req), u, req.socket.remoteAddress);
+          if (action === 'accept') {
+            await logNotificationAudit(id, ALERT_STATUSES.RESPONDER_ACKNOWLEDGED, {
+              channel: 'WEB_OR_APP_DASHBOARD',
+              responderId: u.id,
+              responderName: u.name,
+              timestamp: new Date().toISOString()
+            });
+          }
           broadcast(eventPayload(`sos.${action}`, result));
           return json(res, 200, result);
         }
@@ -504,18 +669,9 @@ const heartbeat = setInterval(() => {
 }, 30000);
 heartbeat.unref();
 
-// Periodic escalation checker for unacknowledged incidents (every 60s)
-const escalationTimer = setInterval(async () => {
-  try {
-    await checkAndEscalateIncidents(3);
-  } catch (err) {
-    console.warn('[EscalationTimer] Notice:', err.message);
-  }
-}, 60000);
-escalationTimer.unref();
-
 await initDatabase();
 initFirebaseAdmin();
 await ensurePermanentResponder();
+startEscalationWorker(5000, broadcast);
 
 server.listen(port, '0.0.0.0', () => console.log(`SOS server listening on port ${port} with WebSocket notifications at /ws`));

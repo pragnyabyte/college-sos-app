@@ -57,32 +57,39 @@ export async function verifyResponderCredentials(responderId, pin, name) {
     const expectedId = process.env.SOS_RESPONDER_ID || AUTHORIZED_RESPONDER_ID;
     const expectedPin = process.env.SOS_RESPONDER_PIN || AUTHORIZED_RESPONDER_PIN;
 
-    // Requirement: Registration/ID must be exactly RESP-1111
-    if (id !== expectedId) {
+    let responderDoc = null;
+    try {
+        const db = await getDb();
+        responderDoc = await db.collection('emergency_responders').findOne({ responderId: id });
+    } catch {}
+
+    // Allow primary responder RESP-1111 or any authorized responder document in database
+    if (id !== expectedId && !responderDoc) {
         throw Object.assign(new Error('Invalid Registration Number'), { status: 401, field: 'registration_number' });
     }
 
-    try {
-        const db = await getDb();
-        const doc = await db.collection('emergency_responders').findOne({ responderId: id });
-        if (doc && doc.pin !== expectedPin) {
+    const targetPin = (id === expectedId) ? expectedPin : (responderDoc?.pin || expectedPin);
+
+    if (id === expectedId && responderDoc && responderDoc.pin !== expectedPin) {
+        try {
+            const db = await getDb();
             await db.collection('emergency_responders').updateOne(
                 { responderId: id },
                 { $set: { pin: expectedPin, updatedAt: new Date().toISOString() } }
             );
-        }
-    } catch {}
+        } catch {}
+    }
 
-    // Requirement: Responder PIN must be exactly 2026 (old PIN 2611 is rejected)
-    if (cleanPin !== expectedPin) {
+    // Validate PIN
+    if (cleanPin !== targetPin) {
         throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
     }
 
     return {
         id,
-        name: name || 'Campus Emergency Response Unit (RESP-1111)',
+        name: name || responderDoc?.name || (id === expectedId ? 'Campus Emergency Response Unit (RESP-1111)' : `Emergency Responder (${id})`),
         role: 'RESPONDER',
-        departmentId: 'DEPT_SECURITY'
+        departmentId: responderDoc?.departmentId || 'DEPT_SECURITY'
     };
 }
 

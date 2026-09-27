@@ -110,7 +110,12 @@ test('Emergency Alert System - Device Registration & Identity Association', asyn
     { responderId: RESPONDER_ID },
     { $unset: { [`devices.${testDeviceId}`]: '' } }
   );
-
-  const { closeDatabase } = await import('./db.js');
-  await closeDatabase();
 });
+
+test.after(async () => {
+  try {
+    const { closeDatabase } = await import('./db.js');
+    await closeDatabase();
+  } catch {}
+});
+

@@ -265,6 +265,12 @@ export async function logNotificationAudit(incidentId, event, details = {}) {
  */
 export async function recordDeviceReceipt({ incidentId, deviceId, responderId = RESPONDER_ID, clientTimestamp }) {
   const now = new Date().toISOString();
+  await logNotificationAudit(incidentId, 'DEVICE_DELIVERY_CONFIRMED', {
+    deviceId,
+    responderId,
+    clientTimestamp: clientTimestamp || now,
+    serverTimestamp: now
+  });
   await logNotificationAudit(incidentId, 'DEVICE_RECEIPT', {
     deviceId,
     responderId,
@@ -279,6 +285,12 @@ export async function recordDeviceReceipt({ incidentId, deviceId, responderId = 
  */
 export async function recordDeviceOpen({ incidentId, deviceId, responderId = RESPONDER_ID, clientTimestamp }) {
   const now = new Date().toISOString();
+  await logNotificationAudit(incidentId, 'NOTIFICATION_DISPLAYED', {
+    deviceId,
+    responderId,
+    clientTimestamp: clientTimestamp || now,
+    serverTimestamp: now
+  });
   await logNotificationAudit(incidentId, 'RESPONDER_OPENED', {
     deviceId,
     responderId,

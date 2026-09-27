@@ -1,5 +1,36 @@
 import { randomUUID } from 'node:crypto';
 
+function setNested(obj, keyPath, val) {
+  if (!keyPath.includes('.')) {
+    obj[keyPath] = val;
+    return;
+  }
+  const parts = keyPath.split('.');
+  let curr = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i];
+    if (!curr[p] || typeof curr[p] !== 'object') {
+      curr[p] = {};
+    }
+    curr = curr[p];
+  }
+  curr[parts[parts.length - 1]] = val;
+}
+
+function unsetNested(obj, keyPath) {
+  if (!keyPath.includes('.')) {
+    delete obj[keyPath];
+    return;
+  }
+  const parts = keyPath.split('.');
+  let curr = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!curr[parts[i]]) return;
+    curr = curr[parts[i]];
+  }
+  delete curr[parts[parts.length - 1]];
+}
+
 class MemoryCollection {
   constructor(name) {
     this.name = name;
@@ -20,21 +51,25 @@ class MemoryCollection {
         continue;
       }
 
+      let docVal;
       if (key.includes('.')) {
         const parts = key.split('.');
         let current = doc;
         for (const p of parts) {
           current = current ? current[p] : undefined;
         }
-        if (current !== val) return false;
-        continue;
+        docVal = current;
+      } else {
+        docVal = doc[key];
       }
 
-      const docVal = doc[key];
-
       if (val && typeof val === 'object' && !Array.isArray(val)) {
+        if ('$in' in val) {
+          if (!Array.isArray(val.$in) || !val.$in.includes(docVal)) return false;
+          continue;
+        }
         if ('$nin' in val) {
-          if (val.$nin.includes(docVal)) return false;
+          if (Array.isArray(val.$nin) && val.$nin.includes(docVal)) return false;
           continue;
         }
         if ('$ne' in val) {
@@ -43,6 +78,15 @@ class MemoryCollection {
         }
         if ('$gte' in val) {
           if (docVal < val.$gte) return false;
+          continue;
+        }
+        if ('$lte' in val) {
+          if (docVal > val.$lte) return false;
+          continue;
+        }
+        if ('$exists' in val) {
+          const exists = docVal !== undefined;
+          if (exists !== Boolean(val.$exists)) return false;
           continue;
         }
         if ('$regex' in val) {
@@ -102,13 +146,20 @@ class MemoryCollection {
     if (index === -1) {
       if (options.upsert) {
         const newDoc = { ...(filter._id ? { _id: filter._id } : {}), ...filter };
+        if (update.$setOnInsert) {
+          for (const [k, v] of Object.entries(update.$setOnInsert)) {
+            setNested(newDoc, k, JSON.parse(JSON.stringify(v)));
+          }
+        }
         if (update.$inc) {
           for (const [k, v] of Object.entries(update.$inc)) {
             newDoc[k] = (newDoc[k] || 0) + v;
           }
         }
         if (update.$set) {
-          Object.assign(newDoc, update.$set);
+          for (const [k, v] of Object.entries(update.$set)) {
+            setNested(newDoc, k, JSON.parse(JSON.stringify(v)));
+          }
         }
         if (!newDoc._id) newDoc._id = 'mem_' + randomUUID();
         this.docs.push(newDoc);
@@ -124,11 +175,13 @@ class MemoryCollection {
       }
     }
     if (update.$set) {
-      Object.assign(doc, update.$set);
+      for (const [k, v] of Object.entries(update.$set)) {
+        setNested(doc, k, JSON.parse(JSON.stringify(v)));
+      }
     }
     if (update.$unset) {
       for (const k of Object.keys(update.$unset)) {
-        delete doc[k];
+        unsetNested(doc, k);
       }
     }
     return JSON.parse(JSON.stringify(doc));
