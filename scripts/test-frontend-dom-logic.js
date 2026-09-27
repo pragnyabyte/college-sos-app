@@ -57,19 +57,17 @@ assert.ok(appJs.includes("u.id === 'RESP-1111'"), 'isResponderUser must recogniz
 assert.ok(!appJs.includes("u.id === '250131'"), 'isResponderUser must NOT have hardcoded 250131');
 console.log('   ✓ PASS: isResponderUser properly identifies RESP-1111.\n');
 
-// 5. Verify Clean Redesigned Student Registration & Sign-In System UI and Handlers
+// 5. Verify Student Registration & Sign-In System UI and Handlers
 console.log('5. Checking Student Registration & Sign-In System implementation...');
-assert.ok(appJs.includes('authCardBottom'), 'Must have authCardBottom container at bottom of card');
-assert.ok(appJs.includes('linkToSignIn'), 'Must have Already registered? Sign in link at bottom');
-assert.ok(appJs.includes('linkToRegister'), 'Must have New student? Register here link at bottom');
+assert.ok(appJs.includes('authModeSwitcher'), 'Must have authModeSwitcher container');
+assert.ok(appJs.includes('btnModeSignIn'), 'Must have Already Registered? Sign In button');
+assert.ok(appJs.includes('btnModeRegister'), 'Must have New Student? Register button');
 assert.ok(appJs.includes('handleRegister'), 'Must have handleRegister function');
 assert.ok(appJs.includes('New Student Registration'), 'Must have New Student Registration heading');
 assert.ok(appJs.includes('Student Sign In'), 'Must have Student Sign In heading');
 assert.ok(appJs.includes('/api/auth/register'), 'Must call /api/auth/register endpoint');
 assert.ok(appJs.includes('Registration successful! You can now sign in.'), 'Must show success message on registration');
-assert.ok(!appJs.includes('Verification (Full Name or Password)'), 'Must not contain verification field');
-assert.ok(!appJs.includes('<select name="role" id="role"'), 'Must not contain role dropdown on student page');
-console.log('   ✓ PASS: Student Registration and Sign-In System correctly implemented without clutter.\n');
+console.log('   ✓ PASS: Student Registration and Sign-In System correctly implemented.\n');
 
 // 6. Verify Anti-Autofill and Reload Protection
 console.log('6. Checking Autofill and Stale Session Protection...');

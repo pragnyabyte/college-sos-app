@@ -166,7 +166,7 @@ const server = createServer(async (req, res) => {
       const role = String(b.role || 'STUDENT').trim().toUpperCase();
 
       if (!regd) {
-        return json(res, 400, { error: role === 'RESPONDER' ? 'Registration / ID No. is required.' : 'Please enter your Registration ID.' });
+        return json(res, 400, { error: 'Registration / ID No. is required.' });
       }
 
       if (regd.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regd)) {
@@ -185,7 +185,7 @@ const server = createServer(async (req, res) => {
         const pin = b.pin || b.password;
         u = await verifyResponderCredentials(regd, pin, b.name);
       } else {
-        const verification = b.verification !== undefined ? b.verification : (b.password || null);
+        const verification = b.verification !== undefined ? b.verification : (b.password || b.name);
         u = await verifyStudentCredentials(regd, verification);
       }
       return json(res, 200, { token: issueToken(u), user: u });

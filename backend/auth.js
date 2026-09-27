@@ -192,12 +192,13 @@ export async function registerStudent({ name, regdNo, password }) {
     };
 }
 
-export async function verifyStudentCredentials(regdNo, verification = null) {
+export async function verifyStudentCredentials(regdNo, verification) {
     const rawId = String(regdNo || '').trim();
     const cleanId = normalizeRegdNo(rawId);
+    const cleanCred = String(verification || '').trim();
 
     if (!cleanId) {
-        throw Object.assign(new Error('Please enter your Registration ID.'), { status: 400 });
+        throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400 });
     }
 
     const db = await getDb();
@@ -208,24 +209,26 @@ export async function verifyStudentCredentials(regdNo, verification = null) {
         throw Object.assign(new Error('Account not found. Please register first.'), { status: 404 });
     }
 
-    // If explicit verification was supplied, verify it:
-    if (verification && String(verification).trim()) {
-        const cleanCred = String(verification).trim();
-        let verified = false;
+    // Requirement: Do not treat registration ID alone as password or proof of identity
+    if (!cleanCred) {
+        throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
+    }
 
-        // Check if matching password
-        if (student.passwordHash && verifyPassword(cleanCred, student.passwordHash)) {
-            verified = true;
-        }
+    // Check credential against registered password or registered full name
+    let verified = false;
 
-        // Check if matching registered student name (case-insensitive)
-        if (!verified && cleanCred.toLowerCase() === String(student.name || '').trim().toLowerCase()) {
-            verified = true;
-        }
+    // Check if matching password
+    if (student.passwordHash && verifyPassword(cleanCred, student.passwordHash)) {
+        verified = true;
+    }
 
-        if (!verified) {
-            throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
-        }
+    // Check if matching registered student name (case-insensitive)
+    if (!verified && cleanCred.toLowerCase() === String(student.name || '').trim().toLowerCase()) {
+        verified = true;
+    }
+
+    if (!verified) {
+        throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
     }
 
     return {
