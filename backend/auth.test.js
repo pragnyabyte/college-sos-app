@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSessionUser, issueToken, authenticate, ROLES, isAdmin, isResponder, verifyResponderCredentials } from './auth.js';
+import { createSessionUser, issueToken, authenticate, ROLES, isAdmin, isResponder, verifyResponderCredentials, registerStudent, verifyStudentCredentials, normalizeRegdNo } from './auth.js';
 import { closeDatabase } from './db.js';
 
 test('createSessionUser succeeds for all valid roles', () => {
@@ -113,5 +113,142 @@ test('isResponder recognizes RESP-1111 and RESPONDER role, rejects old IDs', asy
     assert.equal(isResponder({ id: 'ANY_ID', role: 'RESPONDER' }), true);
     assert.equal(isResponder({ id: '250131', role: 'STUDENT' }), false);
     assert.equal(isResponder({ id: 'RESP-001', role: 'STUDENT' }), false);
+});
+
+test('Student Registration (One-Time Only): registers a new student with unique registration ID', async () => {
+    const uniqueId = 'STU-TEST-' + Math.floor(100000 + Math.random() * 900000);
+    const regResult = await registerStudent({ name: 'Priya Sharma', regdNo: uniqueId });
+    assert.equal(regResult.success, true);
+    assert.equal(regResult.message, 'Registration successful! You can now sign in.');
+    assert.equal(regResult.student.name, 'Priya Sharma');
+    assert.equal(regResult.student.regdNo, uniqueId);
+    assert.ok(regResult.student.accountId.startsWith('STU-'));
+});
+
+test('Student Registration: prevents duplicate registration with same ID', async () => {
+    const uniqueId = 'STU-DUP-' + Math.floor(100000 + Math.random() * 900000);
+    await registerStudent({ name: 'Amit Verma', regdNo: uniqueId });
+
+    // Second registration with same ID must fail
+    await assert.rejects(
+        () => registerStudent({ name: 'Amit Verma', regdNo: uniqueId }),
+        (err) => {
+            assert.equal(err.status, 409);
+            assert.equal(err.message, 'This registration ID is already registered. Please sign in.');
+            return true;
+        }
+    );
+
+    // Case-insensitive duplicate check (e.g. lowercase vs uppercase)
+    await assert.rejects(
+        () => registerStudent({ name: 'Another Student', regdNo: uniqueId.toLowerCase() }),
+        (err) => {
+            assert.equal(err.status, 409);
+            assert.equal(err.message, 'This registration ID is already registered. Please sign in.');
+            return true;
+        }
+    );
+});
+
+test('Student Registration: validates required fields, emails, and formats', async () => {
+    // Missing name
+    await assert.rejects(
+        () => registerStudent({ name: '', regdNo: 'STU-VALID-01' }),
+        /Full Name is required/
+    );
+
+    // Missing ID
+    await assert.rejects(
+        () => registerStudent({ name: 'Valid Name', regdNo: '' }),
+        /Registration \/ ID No\. is required/
+    );
+
+    // Email rejection
+    await assert.rejects(
+        () => registerStudent({ name: 'Test Student', regdNo: 'student@college.edu' }),
+        /Email addresses are not accepted/
+    );
+
+    // Reserved responder ID rejection
+    await assert.rejects(
+        () => registerStudent({ name: 'Fake Responder', regdNo: 'RESP-1111' }),
+        /This registration ID is reserved for emergency services/
+    );
+});
+
+test('Student Sign-In: authenticated successfully with registered ID and verification', async () => {
+    const testId = 'STU-AUTH-' + Math.floor(100000 + Math.random() * 900000);
+    await registerStudent({ name: 'Rahul Sen', regdNo: testId });
+
+    // Sign in using registered Full Name as verification
+    const session = await verifyStudentCredentials(testId, 'Rahul Sen');
+    assert.equal(session.id, testId);
+    assert.equal(session.name, 'Rahul Sen');
+    assert.equal(session.role, 'STUDENT');
+
+    // Case-insensitive name verification check
+    const sessionLower = await verifyStudentCredentials(testId.toLowerCase(), 'rahul sen');
+    assert.equal(sessionLower.id, testId);
+});
+
+test('Student Sign-In: supports optional password authentication', async () => {
+    const testId = 'STU-PASS-' + Math.floor(100000 + Math.random() * 900000);
+    await registerStudent({ name: 'Sneha Patel', regdNo: testId, password: 'SecurePassword123!' });
+
+    // Sign in with password
+    const session = await verifyStudentCredentials(testId, 'SecurePassword123!');
+    assert.equal(session.id, testId);
+    assert.equal(session.name, 'Sneha Patel');
+
+    // Sign in with name also supported
+    const sessionByName = await verifyStudentCredentials(testId, 'Sneha Patel');
+    assert.equal(sessionByName.id, testId);
+
+    // Reject wrong password
+    await assert.rejects(
+        () => verifyStudentCredentials(testId, 'WrongPassword'),
+        (err) => {
+            assert.equal(err.status, 401);
+            assert.equal(err.message, 'Invalid login details. Please try again.');
+            return true;
+        }
+    );
+});
+
+test('Student Sign-In: unregistered student cannot sign in (Account not found)', async () => {
+    await assert.rejects(
+        () => verifyStudentCredentials('UNREGISTERED-ID-999', 'Any Name'),
+        (err) => {
+            assert.equal(err.status, 404);
+            assert.equal(err.message, 'Account not found. Please register first.');
+            return true;
+        }
+    );
+});
+
+test('Student Sign-In: rejects incorrect credentials and empty verification', async () => {
+    const testId = 'STU-FAIL-' + Math.floor(100000 + Math.random() * 900000);
+    await registerStudent({ name: 'Ananya Roy', regdNo: testId });
+
+    // Wrong name/password
+    await assert.rejects(
+        () => verifyStudentCredentials(testId, 'Wrong Name'),
+        (err) => {
+            assert.equal(err.status, 401);
+            assert.equal(err.message, 'Invalid login details. Please try again.');
+            return true;
+        }
+    );
+
+    // Missing verification (registration ID alone is not enough)
+    await assert.rejects(
+        () => verifyStudentCredentials(testId, ''),
+        (err) => {
+            assert.equal(err.status, 401);
+            assert.equal(err.message, 'Invalid login details. Please try again.');
+            return true;
+        }
+    );
+
     await closeDatabase();
 });

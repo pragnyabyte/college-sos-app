@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual, randomBytes, scryptSync, randomUUID } from 'node:crypto';
 import { getDb } from './db.js';
 
 const secret = process.env.SOS_SESSION_SECRET || 'development-only-change-me';
@@ -86,7 +86,162 @@ export async function verifyResponderCredentials(responderId, pin, name) {
     };
 }
 
+
+export function normalizeRegdNo(id) {
+    return String(id || '').trim().toUpperCase();
+}
+
+export function hashPassword(plainText) {
+    const salt = randomBytes(16).toString('hex');
+    const hash = scryptSync(String(plainText), salt, 64).toString('hex');
+    return `${salt}:${hash}`;
+}
+
+export function verifyPassword(plainText, storedHash) {
+    if (!plainText || !storedHash) return false;
+    try {
+        const [salt, hash] = storedHash.split(':');
+        if (!salt || !hash) return false;
+        const testHash = scryptSync(String(plainText), salt, 64).toString('hex');
+        return timingSafeEqual(Buffer.from(testHash), Buffer.from(hash));
+    } catch {
+        return false;
+    }
+}
+
+export async function registerStudent({ name, regdNo, password }) {
+    const cleanName = String(name || '').trim();
+    const rawId = String(regdNo || '').trim();
+    const cleanId = normalizeRegdNo(rawId);
+
+    // 1. Validate required fields
+    if (!cleanName) {
+        throw Object.assign(new Error('Full Name is required'), { status: 400 });
+    }
+    if (!cleanId) {
+        throw Object.assign(new Error('Registration / ID No. is required'), { status: 400 });
+    }
+
+    // 2. Reject email addresses
+    if (cleanId.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanId)) {
+        throw Object.assign(new Error('Email addresses are not accepted. Please enter a valid Registration / Roll / ID No.'), { status: 400 });
+    }
+
+    // 3. ID format validation
+    if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(cleanId)) {
+        throw Object.assign(new Error('Invalid Registration / Roll / ID No. Format must be an ID, Roll No., or Regd. No.'), { status: 400 });
+    }
+
+    // 4. Cannot register as authorized responder ID
+    if (cleanId === AUTHORIZED_RESPONDER_ID) {
+        throw Object.assign(new Error('This registration ID is reserved for emergency services.'), { status: 403 });
+    }
+
+    const db = await getDb();
+    
+    // Ensure unique index exists on students collection
+    try {
+        await db.collection('students').createIndex({ regdNo: 1 }, { unique: true, name: 'student_regd_unique' });
+    } catch {}
+
+    // 5. Check if registration ID already exists in database
+    const existing = await db.collection('students').findOne({ regdNo: cleanId });
+    if (existing) {
+        throw Object.assign(new Error('This registration ID is already registered. Please sign in.'), { status: 409 });
+    }
+
+    // 6. Securely hash password if provided
+    let passwordHash = null;
+    if (password && String(password).trim()) {
+        passwordHash = hashPassword(String(password).trim());
+    }
+
+    const now = new Date().toISOString();
+    const accountId = 'STU-' + (randomUUID ? randomUUID() : Math.random().toString(36).slice(2, 10));
+
+    const studentDoc = {
+        name: cleanName,
+        regdNo: cleanId,
+        createdAt: now,
+        accountId,
+        passwordHash,
+        role: 'STUDENT',
+        departmentId: null
+    };
+
+    try {
+        await db.collection('students').insertOne(studentDoc);
+    } catch (err) {
+        if (err.code === 11000) {
+            throw Object.assign(new Error('This registration ID is already registered. Please sign in.'), { status: 409 });
+        }
+        throw err;
+    }
+
+    console.log(`[SOS:Auth] Successfully registered new student: ${cleanName} (${cleanId}) [${accountId}]`);
+
+    return {
+        success: true,
+        message: 'Registration successful! You can now sign in.',
+        student: {
+            name: cleanName,
+            regdNo: cleanId,
+            createdAt: now,
+            accountId
+        }
+    };
+}
+
+export async function verifyStudentCredentials(regdNo, verification) {
+    const rawId = String(regdNo || '').trim();
+    const cleanId = normalizeRegdNo(rawId);
+    const cleanCred = String(verification || '').trim();
+
+    if (!cleanId) {
+        throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400 });
+    }
+
+    const db = await getDb();
+    const student = await db.collection('students').findOne({ regdNo: cleanId });
+
+    // Requirement: If student has not registered: "Account not found. Please register first."
+    if (!student) {
+        throw Object.assign(new Error('Account not found. Please register first.'), { status: 404 });
+    }
+
+    // Requirement: Do not treat registration ID alone as password or proof of identity
+    if (!cleanCred) {
+        throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
+    }
+
+    // Check credential against registered password or registered full name
+    let verified = false;
+
+    // Check if matching password
+    if (student.passwordHash && verifyPassword(cleanCred, student.passwordHash)) {
+        verified = true;
+    }
+
+    // Check if matching registered student name (case-insensitive)
+    if (!verified && cleanCred.toLowerCase() === String(student.name || '').trim().toLowerCase()) {
+        verified = true;
+    }
+
+    if (!verified) {
+        throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
+    }
+
+    return {
+        id: student.regdNo,
+        name: student.name,
+        role: 'STUDENT',
+        departmentId: null,
+        accountId: student.accountId || String(student._id || '')
+    };
+}
+
 const b64 = (s) => Buffer.from(s).toString('base64url');
+
 
 export function issueToken(user) {
     const body = b64(JSON.stringify({ ...user, exp: Date.now() + 8 * 60 * 60 * 1000 }));

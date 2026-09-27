@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, verifyResponderCredentials } from './auth.js';
+import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, verifyResponderCredentials, registerStudent, verifyStudentCredentials, normalizeRegdNo } from './auth.js';
 import { categories } from './domain.js';
 import { initDatabase } from './db.js';
 import { changeStatus, createIncident, deleteIncident, exportCsv, getIncident, listIncidents, stats, updateIncidentLocation } from './service.js';
@@ -154,6 +154,12 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    if (path === '/api/auth/register' && req.method === 'POST') {
+      const b = await body(req);
+      const result = await registerStudent(b);
+      return json(res, 201, result);
+    }
+
     if ((path === '/api/auth/login' || path === '/api/auth/demo') && req.method === 'POST') {
       const b = await body(req);
       const regd = String(b.regdNo || b.userId || b.id || '').trim();
@@ -179,12 +185,8 @@ const server = createServer(async (req, res) => {
         const pin = b.pin || b.password;
         u = await verifyResponderCredentials(regd, pin, b.name);
       } else {
-        u = createSessionUser({
-          name: b.name || b.userId || 'Student',
-          regdNo: regd,
-          role: b.role || 'STUDENT',
-          departmentId: b.departmentId
-        });
+        const verification = b.verification !== undefined ? b.verification : (b.password || b.name);
+        u = await verifyStudentCredentials(regd, verification);
       }
       return json(res, 200, { token: issueToken(u), user: u });
     }

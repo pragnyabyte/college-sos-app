@@ -846,6 +846,12 @@ nav button.on:after {
   animation: fadeIn 0.2s ease-out;
 }
 
+.loginToast.success {
+  background: #10b9811f !important;
+  border-color: #10b98166 !important;
+  color: #059669 !important;
+}
+
 .loginToast button {
   background: none;
   border: none;
@@ -855,6 +861,73 @@ nav button.on:after {
   padding: 0 4px;
   margin-left: 10px;
   line-height: 1;
+}
+
+.loginToast.success button {
+  color: #059669 !important;
+}
+
+/* Student Auth Mode Switcher (Sign In vs Register) */
+.authModeSwitcher {
+  display: flex;
+  background: #eef2f6;
+  border: 1px solid #d8e2ea;
+  border-radius: 10px;
+  padding: 4px;
+  margin: 18px 0 20px;
+  gap: 4px;
+}
+
+.authModeBtn {
+  flex: 1;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: #4b6377;
+  font-weight: 600;
+  font-size: 13.5px;
+  border-radius: 7px;
+  transition: all 0.2s ease;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.authModeBtn:hover {
+  color: var(--navy);
+}
+
+.authModeBtn.active {
+  background: white;
+  color: var(--navy);
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgba(16, 40, 61, 0.08);
+}
+
+.authSwitchText {
+  text-align: center;
+  margin-top: 18px;
+  font-size: 13.5px;
+  color: #64748b;
+}
+
+.authSwitchLink {
+  color: #0284c7;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.authSwitchLink:hover {
+  text-decoration: underline;
+  color: #0369a1;
+}
+
+.reqTag {
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: 4px;
 }
 
 footer {

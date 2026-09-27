@@ -106,19 +106,26 @@ async function runTestSuite() {
   assert.equal(resEmptyPin.data.error, 'Invalid PIN');
   console.log('   ✓ PASS: Proper validation messages for empty fields.\n');
 
-  // Test Case 6: Student login → Must continue working normally
-  console.log('6. Testing Student Login...');
+  // Test Case 6: Student Registration & Login Flow
+  console.log('6. Testing Student Registration and Login...');
   const stuReg = `STU-TEST-${Date.now()}`;
-  const resStu = await req('/api/auth/login', 'POST', {
+  const regRes = await req('/api/auth/register', 'POST', {
     name: 'Rahul Sharma',
+    regdNo: stuReg
+  });
+  assert.equal(regRes.status, 201, 'Student registration must return 201');
+  assert.equal(regRes.data.success, true);
+
+  const resStu = await req('/api/auth/login', 'POST', {
     regdNo: stuReg,
-    role: 'STUDENT'
+    role: 'STUDENT',
+    verification: 'Rahul Sharma'
   });
   assert.equal(resStu.status, 200, 'Student login must return 200');
   assert.equal(resStu.data.user.role, 'STUDENT');
   assert.equal(resStu.data.user.id, stuReg);
   assert.ok(resStu.data.token, 'Student token must be issued');
-  console.log('   ✓ PASS: Student login works normally without interruption.\n');
+  console.log('   ✓ PASS: Student registration and sign-in works cleanly.\n');
 
   // Test Case 7: Responder permissions & features
   console.log('7. Testing Responder Permissions (Incidents & Deletions)...');

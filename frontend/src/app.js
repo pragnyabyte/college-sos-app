@@ -783,7 +783,7 @@ function shell(content) {
         </div>
         <div class="identity">
           <span class="avatar">${esc(state.user.name?.[0] || (isResp ? 'R' : 'U'))}</span>
-          <div class="userMeta"><b>${esc(state.user.name)}</b><small>${roleLabel(state.user.role)}</small></div>
+          <div class="userMeta"><b>${esc(state.user.name)}</b><small>${isResp ? roleLabel(state.user.role) : `${esc(state.user.id)} · Student`}</small></div>
           <button class="logoutBtn" data-action="logout" title="Sign out" aria-label="Sign out">
             <span class="logoutText">Sign out</span>
             <svg class="logoutIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -850,8 +850,131 @@ function clearLoginError() {
   }
 }
 
+let currentAuthRole = 'STUDENT';
+let studentAuthMode = 'signin';
+let savedRegdForSignIn = '';
+
+function showLoginSuccess(msg) {
+  state.error = '';
+  let toast = document.querySelector('#loginToast');
+  if (!toast) {
+    const form = document.querySelector('#login');
+    const header = form?.querySelector('.formHeader');
+    if (form && header) {
+      toast = document.createElement('div');
+      toast.id = 'loginToast';
+      toast.className = 'toast loginToast success';
+      toast.setAttribute('role', 'alert');
+      header.insertAdjacentElement('afterend', toast);
+    }
+  }
+  if (toast) {
+    toast.className = 'toast loginToast success';
+    toast.style.display = 'flex';
+    toast.innerHTML = `${esc(msg)}<button type="button" data-action="clear-error">×</button>`;
+    const btn = toast.querySelector('[data-action="clear-error"]');
+    if (btn) {
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearLoginError();
+      };
+    }
+  }
+}
+
+async function handleRegister(formEl) {
+  const f = formEl || document.querySelector('#login');
+  if (!f) return;
+  const nameInput = f.elements['name'] || document.querySelector('#regName');
+  const regdInput = f.elements['registration_number'] || document.querySelector('#regRegdNo');
+
+  const name = String(nameInput?.value || '').trim();
+  const regdNo = String(regdInput?.value || '').trim();
+
+  if (!name) {
+    showLoginError('Please enter your full name.');
+    nameInput?.focus();
+    return;
+  }
+  if (!regdNo) {
+    showLoginError('Please enter your Registration / ID No.');
+    regdInput?.focus();
+    return;
+  }
+  if (regdNo.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regdNo)) {
+    showLoginError('Email addresses are not accepted. Please enter your Registration / ID No.');
+    if (regdInput) {
+      regdInput.value = '';
+      regdInput.focus();
+    }
+    return;
+  }
+  if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(regdNo)) {
+    showLoginError('Invalid Registration Number format. Format must be an ID, Roll No., or Regd. No.');
+    return;
+  }
+
+  state.busy = true;
+  clearLoginError();
+  const submitBtn = f.querySelector('#btn-register-submit') || f.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Registering…';
+  }
+
+  try {
+    const res = await fetch(buildApiUrl('/api/auth/register'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, regdNo })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.error || 'Registration failed.');
+      err.status = res.status;
+      throw err;
+    }
+
+    // Success: Redirect to sign-in page, prefill registration ID, show success message
+    studentAuthMode = 'signin';
+    savedRegdForSignIn = regdNo;
+    login();
+    showLoginSuccess('Registration successful! You can now sign in.');
+    const newRegd = document.querySelector('#regdNo');
+    if (newRegd) newRegd.value = regdNo;
+    const verif = document.querySelector('#authVerification');
+    if (verif) verif.focus();
+  } catch (err) {
+    showLoginError(err.message || 'Registration failed.');
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Register →';
+    }
+  } finally {
+    state.busy = false;
+  }
+}
+
 // ONE UNIFIED SIGN IN SCREEN FOR ALL USERS (Students, Responders)
 function login() {
+  const isResp = currentAuthRole === 'RESPONDER';
+  const isRegister = !isResp && studentAuthMode === 'register';
+
+  let eyebrow = 'STUDENT PORTAL';
+  let heading = 'Student Sign In';
+  let subtitle = 'Enter your details to open your emergency response dashboard.';
+
+  if (isResp) {
+    eyebrow = 'COMMAND & DISPATCH';
+    heading = 'Responder Sign In';
+    subtitle = 'Authorized emergency response unit authentication.';
+  } else if (isRegister) {
+    eyebrow = 'STUDENT REGISTRATION';
+    heading = 'New Student Registration';
+    subtitle = 'Register once to access emergency assistance.';
+  }
+
   app.innerHTML = `<div class="login">
     <section>
       <div class="loginIcon">SOS</div>
@@ -867,41 +990,104 @@ function login() {
         <input type="password" name="fake_password_autofill" tabindex="-1" autocomplete="current-password">
       </div>
       <div class="formHeader">
-        <p class="eyebrow">PORTAL ACCESS</p>
-        <h2>Sign in</h2>
-        <p>Enter your details to open your emergency response dashboard.</p>
+        <p class="eyebrow ${isResp || isRegister ? 'danger' : ''}">${eyebrow}</p>
+        <h2>${heading}</h2>
+        <p>${subtitle}</p>
       </div>
       <div id="loginToast" class="toast loginToast" role="alert" style="${state.error ? '' : 'display:none;'}">${esc(state.error || '')}<button type="button" data-action="clear-error">×</button></div>
-      <label>Full Name<input required type="text" name="name" id="name" placeholder="Enter full name" autocomplete="off" enterkeyhint="next"></label>
-      <label>Regd. / ID No.<input required type="text" name="registration_number" id="regdNo" value="" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\-\.\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID (e.g. 2024CS001, STU-001, EMP-101). Email addresses are not accepted." enterkeyhint="next"></label>
+
       <label>Role
         <select name="role" id="role" required>
-          <option value="STUDENT">Student</option>
-          <option value="RESPONDER">Emergency Responder</option>
+          <option value="STUDENT" ${!isResp ? 'selected' : ''}>Student</option>
+          <option value="RESPONDER" ${isResp ? 'selected' : ''}>Emergency Responder</option>
         </select>
       </label>
-      <div id="pinGroup" style="display:none">
-        <label>Responder PIN
-          <div class="pinWrapper">
-            <input type="password" name="pin" id="pin" value="" placeholder="Enter Responder PIN" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly')">
-            <button type="button" class="btnTogglePin" id="togglePinVisibility" aria-label="Show PIN" title="Show PIN">
-              <svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
-          </div>
+
+      ${!isResp ? `
+        <!-- Two clear options on the student sign-in page -->
+        <div class="authModeSwitcher" id="authModeSwitcher">
+          <button type="button" class="authModeBtn ${!isRegister ? 'active' : ''}" id="btnModeSignIn">Already Registered? Sign In</button>
+          <button type="button" class="authModeBtn ${isRegister ? 'active' : ''}" id="btnModeRegister">New Student? Register</button>
+        </div>
+      ` : ''}
+
+      ${isRegister ? `
+        <!-- NEW STUDENT REGISTRATION (ONE-TIME ONLY) -->
+        <label>Full Name <span class="reqTag">*</span>
+          <input required type="text" name="name" id="regName" placeholder="Enter full name" autocomplete="name" enterkeyhint="next">
         </label>
-      </div>
-      <button class="primary" type="submit" id="open-dashboard-btn">Open Dashboard →</button>
-      <small id="roleHint">Students access the SOS dashboard. Responders require authorized PIN.</small>
+        <label>Registration ID <span class="reqTag">*</span>
+          <input required type="text" name="registration_number" id="regRegdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="done">
+        </label>
+        <button class="primary" type="submit" id="btn-register-submit">Register →</button>
+        <p class="authSwitchText">Already registered? <a href="#" id="linkToSignIn" class="authSwitchLink">Sign In</a></p>
+      ` : (!isResp ? `
+        <!-- EXISTING STUDENT SIGN-IN -->
+        <label>Registration ID <span class="reqTag">*</span>
+          <input required type="text" name="registration_number" id="regdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="next">
+        </label>
+        <label>Verification (Full Name or Password) <span class="reqTag">*</span>
+          <input required type="text" name="verification" id="authVerification" placeholder="Enter registered Full Name or Password" autocomplete="off" enterkeyhint="done">
+        </label>
+        <button class="primary" type="submit" id="open-dashboard-btn">Sign In →</button>
+        <p class="authSwitchText">New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a></p>
+      ` : `
+        <!-- RESPONDER LOGIN -->
+        <label>Registration / ID No. <span class="reqTag">*</span>
+          <input required type="text" name="registration_number" id="regdNo" value="" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID (e.g. 2024CS001, STU-001, EMP-101). Email addresses are not accepted." enterkeyhint="next">
+        </label>
+        <div id="pinGroup">
+          <label>Responder PIN <span class="reqTag">*</span>
+            <div class="pinWrapper">
+              <input type="password" name="pin" id="pin" value="" placeholder="Enter Responder PIN" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly')">
+              <button type="button" class="btnTogglePin" id="togglePinVisibility" aria-label="Show PIN" title="Show PIN">
+                <svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </label>
+        </div>
+        <button class="primary" type="submit" id="open-dashboard-btn">Open Dashboard →</button>
+        <small id="roleHint">Emergency Responders require authorized ID and PIN.</small>
+      `)}
     </form>
   </div>`;
 
-  // Dynamic PIN field toggle based on role selection (without autofilling any ID)
   const roleSelect = document.querySelector('#role');
-  const pinGroup = document.querySelector('#pinGroup');
   const regdInput = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
   const pinInput = document.querySelector('#pin');
   const togglePinBtn = document.querySelector('#togglePinVisibility');
-  const roleHint = document.querySelector('#roleHint');
+
+  // Mode Switchers
+  const switchToSignIn = (e) => {
+    if (e) e.preventDefault();
+    clearLoginError();
+    studentAuthMode = 'signin';
+    const entered = document.querySelector('#regRegdNo')?.value || document.querySelector('#regdNo')?.value;
+    if (entered) savedRegdForSignIn = entered;
+    login();
+  };
+  const switchToRegister = (e) => {
+    if (e) e.preventDefault();
+    clearLoginError();
+    studentAuthMode = 'register';
+    const entered = document.querySelector('#regdNo')?.value || document.querySelector('#regRegdNo')?.value;
+    if (entered) savedRegdForSignIn = entered;
+    login();
+  };
+
+  document.querySelector('#btnModeSignIn')?.addEventListener('click', switchToSignIn);
+  document.querySelector('#linkToSignIn')?.addEventListener('click', switchToSignIn);
+  document.querySelector('#btnModeRegister')?.addEventListener('click', switchToRegister);
+  document.querySelector('#linkToRegister')?.addEventListener('click', switchToRegister);
+
+  // Role select listener
+  if (roleSelect) {
+    roleSelect.addEventListener('change', () => {
+      clearLoginError();
+      currentAuthRole = roleSelect.value;
+      login();
+    });
+  }
 
   // Ensure Responder PIN field starts 100% empty with no bullets
   if (pinInput) {
@@ -932,9 +1118,10 @@ function login() {
   }
 
   if (regdInput) {
-    // Explicitly guarantee field starts completely blank
-    regdInput.value = '';
-    regdInput.defaultValue = '';
+    if (!savedRegdForSignIn) {
+      regdInput.value = '';
+      regdInput.defaultValue = '';
+    }
 
     let userInteractedWithRegd = false;
 
@@ -944,7 +1131,7 @@ function login() {
       const el = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
       if (el && !el.matches(':focus')) {
         const val = el.value.toUpperCase().trim();
-        if (val === 'RESP-001' || val === '250131' || val === 'RESP-1111') {
+        if (val === 'RESP-001' || val === '250131' || (currentAuthRole === 'STUDENT' && val === 'RESP-1111')) {
           el.value = '';
         }
       }
@@ -971,30 +1158,6 @@ function login() {
       regdInput.addEventListener(evt, () => {
         regdInput.removeAttribute('readonly');
       }, { passive: true });
-    });
-  }
-
-  if (roleSelect && pinGroup) {
-    roleSelect.addEventListener('change', () => {
-      clearLoginError();
-      const isResp = roleSelect.value === 'RESPONDER';
-      pinGroup.style.display = isResp ? 'block' : 'none';
-      if (isResp) {
-        if (pinInput) {
-          pinInput.value = '';
-          pinInput.defaultValue = '';
-          pinInput.type = 'password';
-        }
-        if (togglePinBtn) {
-          togglePinBtn.setAttribute('title', 'Show PIN');
-          togglePinBtn.setAttribute('aria-label', 'Show PIN');
-          togglePinBtn.innerHTML = `<svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>`;
-        }
-        roleHint.textContent = 'Emergency Responders require authorized ID and PIN.';
-      } else {
-        if (pinInput) pinInput.value = '';
-        roleHint.textContent = 'Students access the SOS request dashboard.';
-      }
     });
   }
 }
@@ -1463,50 +1626,47 @@ async function loadStats() {
 async function handleLogin(formEl) {
   const f = formEl || document.querySelector('#login');
   if (!f) return;
-  const nameInput = f.elements['name'];
-  const regdInput = f.elements['registration_number'] || f.elements['regdNo'];
-  const roleSelect = f.elements['role'];
-  const pinInput = f.elements['pin'];
+  const regdInput = f.elements['registration_number'] || document.querySelector('#regdNo');
+  const roleSelect = f.elements['role'] || document.querySelector('#role');
+  const pinInput = f.elements['pin'] || document.querySelector('#pin');
+  const verifInput = f.elements['verification'] || document.querySelector('#authVerification');
 
-  const name = String(nameInput?.value || '').trim();
   const regdNo = String(regdInput?.value || '').trim();
-  const role = String(roleSelect?.value || 'STUDENT').trim();
+  const role = String(roleSelect?.value || currentAuthRole || 'STUDENT').trim();
   const pin = String(pinInput?.value || '').trim();
-
-  if (!name) {
-    showLoginError('Please enter your full name.');
-    nameInput?.focus();
-    return;
-  }
-  if (!regdNo) {
-    showLoginError('Please enter your Registration / ID No.');
-    regdInput?.focus();
-    return;
-  }
-  if (regdNo.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regdNo)) {
-    showLoginError('Email addresses are not accepted. Please enter your Registration / ID No.');
-    if (regdInput) {
-      regdInput.value = '';
-      regdInput.focus();
-    }
-    return;
-  }
-  if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(regdNo)) {
-    showLoginError('Invalid Registration Number');
-    if (regdInput) {
-      regdInput.value = '';
-      regdInput.focus();
-    }
-    return;
-  }
-
-  if (role !== 'STUDENT' && role !== 'RESPONDER') {
-    showLoginError('Invalid role. Please select Student or Emergency Responder.');
-    return;
-  }
-
+  const verification = String(verifInput?.value || '').trim();
   const isResp = role === 'RESPONDER';
-  if (isResp) {
+
+  if (!isResp) {
+    // STUDENT LOGIN VALIDATION
+    if (!regdNo) {
+      showLoginError('Please enter your Registration / ID No.');
+      regdInput?.focus();
+      return;
+    }
+    if (regdNo.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regdNo)) {
+      showLoginError('Email addresses are not accepted. Please enter your Registration / ID No.');
+      if (regdInput) {
+        regdInput.value = '';
+        regdInput.focus();
+      }
+      return;
+    }
+    if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(regdNo)) {
+      showLoginError('Invalid Registration Number');
+      if (regdInput) {
+        regdInput.value = '';
+        regdInput.focus();
+      }
+      return;
+    }
+    if (!verification) {
+      showLoginError('Please enter your registered Full Name or Password.');
+      verifInput?.focus();
+      return;
+    }
+  } else {
+    // RESPONDER LOGIN VALIDATION
     if (!regdNo && !pin) {
       showLoginError('Registration / ID No. and Responder PIN are required.');
       regdInput?.focus();
@@ -1554,65 +1714,48 @@ async function handleLogin(formEl) {
 
   state.busy = true;
   clearLoginError();
+  const submitBtn = f.querySelector('#open-dashboard-btn') || f.querySelector('button[type="submit"]');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Authenticating…';
+  }
+
   try {
-    console.log(`[SOS:Auth] Logging in as ${name} (${regdNo}) with role: ${role}`);
-    let d;
-    try {
-      const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
-      if (isStaticHost && !RAW_API_URL) {
-        const netErr = new Error('Backend server is unavailable. Please try again.');
-        netErr.isNetworkError = true;
-        throw netErr;
-      }
+    console.log(`[SOS:Auth] Logging in as ${regdNo} with role: ${role}`);
+    const loginPayload = isResp
+      ? { regdNo, role, pin }
+      : { regdNo, role, verification };
 
-      const res = await fetch(buildApiUrl('/api/auth/login'), {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, regdNo, role, pin })
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (ct.includes('text/html') || res.status >= 500) {
-        const netErr = new Error('Backend server is unavailable. Please try again.');
-        netErr.isNetworkError = true;
-        throw netErr;
-      }
-      let data;
-      try {
-        data = await res.json();
-      } catch {
-        const netErr = new Error('Backend server is unavailable. Please try again.');
-        netErr.isNetworkError = true;
-        throw netErr;
-      }
-      if (!res.ok) {
-        const err = new Error(data.error || 'Authentication failed');
-        err.field = data.field;
-        throw err;
-      }
-      d = data;
-    } catch (apiErr) {
-      const isNetwork = apiErr.isNetworkError ||
-        apiErr.name === 'TypeError' ||
-        String(apiErr.message || '').includes('fetch') ||
-        String(apiErr.message || '').includes('Network') ||
-        String(apiErr.message || '').includes('unavailable') ||
-        String(apiErr.message || '').includes('offline');
+    const res = await fetch(buildApiUrl('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(loginPayload)
+    });
 
-      if (isResp) {
-        if (isNetwork) {
-          const connErr = new Error('Backend server is unavailable. Please try again.');
-          connErr.isNetworkError = true;
-          throw connErr;
-        }
-        throw apiErr;
-      }
-      console.warn('API fallback to local session:', apiErr.message);
-      d = {
-        token: 'session-' + Date.now(),
-        user: { id: regdNo, name, role: 'STUDENT', departmentId: null }
-      };
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('text/html') || res.status >= 500) {
+      const netErr = new Error('Backend server is unavailable. Please try again.');
+      netErr.isNetworkError = true;
+      throw netErr;
     }
 
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      const netErr = new Error('Backend server is unavailable. Please try again.');
+      netErr.isNetworkError = true;
+      throw netErr;
+    }
+
+    if (!res.ok) {
+      const err = new Error(data.error || 'Authentication failed');
+      err.status = res.status;
+      err.field = data.field;
+      throw err;
+    }
+
+    const d = data;
     state.user = d.user;
     state.token = d.token;
     state.error = '';
@@ -1665,6 +1808,18 @@ async function handleLogin(formEl) {
           pinInput.focus();
         }
       }
+    } else if (!isResp && !isNetwork) {
+      // For student: If invalid login details (401), clear ONLY the verification input:
+      if (err.status === 401 && verifInput) {
+        verifInput.value = '';
+        verifInput.focus();
+      }
+      // If 404 (Account not found), keep the registration number intact!
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = isResp ? 'Open Dashboard →' : 'Sign In →';
     }
   } finally {
     state.busy = false;
@@ -2183,6 +2338,11 @@ document.addEventListener('click', async (e) => {
   if (el.id === 'open-dashboard-btn') {
     e.preventDefault();
     return handleLogin(el.closest('form'));
+  }
+
+  if (el.id === 'btn-register-submit') {
+    e.preventDefault();
+    return handleRegister(el.closest('form'));
   }
 
   if (el.dataset.view) {

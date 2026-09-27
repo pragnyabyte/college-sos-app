@@ -46,7 +46,7 @@ assert.ok(!wrongIdBlock.includes("pinInput.value = ''"), 'Must NOT clear pinInpu
 console.log('   ✓ PASS: Wrong ID clears ONLY the Registration Number field; PIN is preserved.\n');
 
 // If PIN is wrong, only pinInput is cleared, regdInput is untouched
-const wrongPinBlock = appJs.slice(appJs.indexOf("if (pin !== '2026')"), appJs.indexOf("state.busy = true"));
+const wrongPinBlock = appJs.slice(appJs.indexOf("if (pin !== '2026')"), appJs.indexOf("state.busy = true", appJs.indexOf("if (pin !== '2026')")));
 assert.ok(wrongPinBlock.includes("pinInput.value = ''"), 'Must clear pinInput when PIN is invalid');
 assert.ok(!wrongPinBlock.includes("regdInput.value = ''"), 'Must NOT clear regdInput when PIN is invalid');
 console.log('   ✓ PASS: Wrong PIN clears ONLY the PIN field; Registration Number is preserved.\n');
@@ -57,8 +57,20 @@ assert.ok(appJs.includes("u.id === 'RESP-1111'"), 'isResponderUser must recogniz
 assert.ok(!appJs.includes("u.id === '250131'"), 'isResponderUser must NOT have hardcoded 250131');
 console.log('   ✓ PASS: isResponderUser properly identifies RESP-1111.\n');
 
-// 5. Verify Anti-Autofill and Reload Protection
-console.log('5. Checking Autofill and Stale Session Protection...');
+// 5. Verify Student Registration & Sign-In System UI and Handlers
+console.log('5. Checking Student Registration & Sign-In System implementation...');
+assert.ok(appJs.includes('authModeSwitcher'), 'Must have authModeSwitcher container');
+assert.ok(appJs.includes('btnModeSignIn'), 'Must have Already Registered? Sign In button');
+assert.ok(appJs.includes('btnModeRegister'), 'Must have New Student? Register button');
+assert.ok(appJs.includes('handleRegister'), 'Must have handleRegister function');
+assert.ok(appJs.includes('New Student Registration'), 'Must have New Student Registration heading');
+assert.ok(appJs.includes('Student Sign In'), 'Must have Student Sign In heading');
+assert.ok(appJs.includes('/api/auth/register'), 'Must call /api/auth/register endpoint');
+assert.ok(appJs.includes('Registration successful! You can now sign in.'), 'Must show success message on registration');
+console.log('   ✓ PASS: Student Registration and Sign-In System correctly implemented.\n');
+
+// 6. Verify Anti-Autofill and Reload Protection
+console.log('6. Checking Autofill and Stale Session Protection...');
 assert.ok(appJs.includes('safeStorage.clearSession()'), 'Must clear stale session on detection');
 assert.ok(appJs.includes('userInteractedWithRegd'), 'Must protect user typing from being erased on blur');
 console.log('   ✓ PASS: Autofill wipers protect blank initial state while preserving manual user typing.\n');
