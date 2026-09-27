@@ -1,18 +1,76 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Emergency incidents collection
-    match /incidents/{incidentId} {
-      allow read: if true;
-      allow create: if true;
-      allow update: if true;
-      allow delete: if true;
+    
+    // Helper function to check non-empty string
+    function isNonEmptyString(text) {
+      return text is string && text.size() > 0 && text.size() <= 200;
     }
 
-    // Permanent responder identity and device tokens
+    // Students collection: each student's document is keyed by their normalized registration ID
+    match /students/{regdNo} {
+      // Allow fetching single student doc for login credential verification
+      allow get: if true;
+      allow list: if false; // Disallow exposing all student records
+      
+      // Allow new student registration only if:
+      // 1. Document does not already exist (prevents duplicate registration)
+      // 2. Contains valid name, regdNo matching document ID, and STUDENT role
+      allow create: if request.resource.data.regdNo == regdNo
+                    && isNonEmptyString(request.resource.data.name)
+                    && isNonEmptyString(request.resource.data.regdNo)
+                    && request.resource.data.role == 'STUDENT'
+                    && !exists(/databases/$(database)/documents/students/$(regdNo));
+                    
+      // Prevent tampering with registered student accounts
+      allow update, delete: if false;
+    }
+
+    // Emergency Responders collection: pre-authorized responder identities and device push tokens
     match /emergency_responders/{responderId} {
+      allow get: if true;
+      allow list: if false; // Do not expose all responder accounts
+      
+      // Allow authorized responders to register or update their device push notification tokens
+      allow create, update: if responderId == 'RESP-1111'
+                            || exists(/databases/$(database)/documents/emergency_responders/$(responderId));
+      allow delete: if false;
+    }
+
+    // Responder devices collection for push notification tokens
+    match /responder_devices/{deviceId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if request.resource.data.responderId is string;
+    }
+
+    // Emergency Incidents collection
+    match /incidents/{incidentId} {
+      // Responders and students monitor incoming emergency incidents
+      allow read: if true;
+
+      // Compulsory validation on building, floor, room, student info, and valid initial status
+      allow create: if request.resource.data.id == incidentId
+                    && isNonEmptyString(request.resource.data.student_name)
+                    && isNonEmptyString(request.resource.data.student_id)
+                    && request.resource.data.location is map
+                    && isNonEmptyString(request.resource.data.location.building)
+                    && isNonEmptyString(request.resource.data.location.floor)
+                    && isNonEmptyString(request.resource.data.location.room)
+                    && request.resource.data.status in ['SOS_SENT', 'DEPARTMENT_NOTIFIED', 'QUEUED_OFFLINE'];
+
+      // Allow status transitions or location updates
+      allow update: if request.resource.data.status in ['SOS_SENT', 'DEPARTMENT_NOTIFIED', 'ACCEPTED', 'RESPONDING', 'ARRIVED', 'RESOLVED', 'CANCELLED'];
+
+      // Allow responder cleanup / deletion
+      allow delete: if true;
+
+      // Allow audit delivery receipts and logs subcollections
+      match /delivery_receipts/{receiptId} {
+        allow read, write: if true;
+      }
+      match /delivery_logs/{logId} {
+        allow read, write: if true;
+      }
     }
   }
 }

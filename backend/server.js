@@ -1,6 +1,8 @@
+import express from 'express';
 import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { authenticate, createSessionUser, issueToken, isAdmin, isResponder, verifyResponderCredentials, registerStudent, verifyStudentCredentials, normalizeRegdNo } from './auth.js';
 import { categories } from './domain.js';
@@ -36,7 +38,11 @@ import {
   getRegisteredResponderPhones
 } from './escalation.js';
 
-const port = Number(process.env.PORT || 4000), limits = new Map();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const port = Number(process.env.PORT || 4000);
+const limits = new Map();
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://college-sos-app-26aec.web.app',
@@ -80,61 +86,6 @@ export function getCorsHeaders(req) {
   return {};
 }
 
-const json = (res, status, data, extraHeaders = {}) => {
-  const req = res.req;
-  const cors = req ? getCorsHeaders(req) : {};
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'x-content-type-options': 'nosniff',
-    'x-frame-options': 'DENY',
-    'referrer-policy': 'no-referrer',
-    ...cors,
-    ...extraHeaders
-  });
-  res.end(JSON.stringify(data));
-};
-
-const xml = (res, status, xmlString) => {
-  res.writeHead(status, {
-    'content-type': 'application/xml; charset=utf-8',
-    'cache-control': 'no-store'
-  });
-  res.end(xmlString);
-};
-
-const body = async (req) => {
-  let raw = '';
-  for await (const c of req) {
-    raw += c;
-    if (raw.length > 50_000) throw Object.assign(new Error('Payload too large'), { status: 413 });
-  }
-  if (!raw) return {};
-  const contentType = req.headers['content-type'] || '';
-  if (contentType.includes('application/x-www-form-urlencoded')) {
-    try {
-      return Object.fromEntries(new URLSearchParams(raw));
-    } catch {
-      return {};
-    }
-  }
-  try {
-    return JSON.parse(raw);
-  } catch {
-    try {
-      if (raw.includes('=')) return Object.fromEntries(new URLSearchParams(raw));
-    } catch {}
-    throw Object.assign(new Error('Invalid JSON'), { status: 400 });
-  }
-};
-
-const rate = (req) => {
-  const key = req.socket.remoteAddress || 'unknown', now = Date.now(), v = limits.get(key) || { n: 0, t: now };
-  if (now - v.t > 60_000) { v.n = 0; v.t = now; }
-  if (++v.n > 80) throw Object.assign(new Error('Too many requests'), { status: 429 });
-  limits.set(key, v);
-};
-
 const eventPayload = (event, incident) => ({
   event,
   id: incident.id,
@@ -161,444 +112,666 @@ const eventPayload = (event, incident) => ({
   timestamp: new Date().toISOString()
 });
 
-const server = createServer(async (req, res) => {
-  try {
-    const origin = req.headers.origin;
+// Initialize Express App and HTTP Server
+const app = express();
+const server = createServer(app);
+
+// Trust proxy for reverse proxies
+app.set('trust proxy', true);
+
+// Standard security headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
+// Strict CORS middleware matching project security requirements
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin) {
+    return next();
+  }
+  if (isOriginAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    res.setHeader('Vary', 'Origin');
     if (req.method === 'OPTIONS') {
-      if (origin && isOriginAllowed(origin)) {
-        res.writeHead(204, {
-          'Access-Control-Allow-Origin': origin,
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin',
-          'Access-Control-Allow-Credentials': 'true',
-          'Access-Control-Max-Age': '86400',
-          'Vary': 'Origin',
-          'Content-Length': '0'
-        });
-        return res.end();
-      }
-      res.writeHead(403, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'CORS origin not allowed' }));
+      return res.status(204).end();
     }
+    return next();
+  }
+  if (req.method === 'OPTIONS') {
+    return res.status(403).json({ error: 'CORS origin not allowed' });
+  }
+  return next();
+});
 
-    rate(req);
-    const url = new URL(req.url || '/', 'http://local'), path = url.pathname;
+// Body parsers
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-    if (path === '/api/health' || path === '/health') return json(res, 200, { status: 'ok', websocket: '/ws', time: new Date().toISOString() });
+// Rate limiting middleware
+app.use((req, res, next) => {
+  const key = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const v = limits.get(key) || { n: 0, t: now };
+  if (now - v.t > 60_000) { v.n = 0; v.t = now; }
+  if (++v.n > 80) {
+    return res.status(429).json({ error: 'Too many requests' });
+  }
+  limits.set(key, v);
+  next();
+});
 
-    if (path === '/api/config') {
-      return json(res, 200, {
-        firebaseConfig: {
-          projectId: "college-sos-app-26aec",
-          appId: "1:888750165100:web:c5717332b893a6dc06dc49",
-          storageBucket: "college-sos-app-26aec.firebasestorage.app",
-          apiKey: "AIzaSyBsijDOP3woYoWK0An37rYTDu0zCWdeYhg",
-          authDomain: "college-sos-app-26aec.firebaseapp.com",
-          messagingSenderId: "888750165100",
-          measurementId: "G-7NKML0LRT6",
-          projectNumber: "888750165100"
-        },
-        vapidKey: process.env.FIREBASE_VAPID_KEY || ""
-      });
-    }
+// Sanitized request logging (masks tokens, passwords, PINs)
+app.use((req, res, next) => {
+  if (req.path === '/health' || req.path === '/api/health') return next();
+  console.log(`[HTTP] ${req.method} ${req.path}`);
+  next();
+});
 
-    if (path === '/api/auth/register' && req.method === 'POST') {
-      const b = await body(req);
-      const result = await registerStudent(b);
-      return json(res, 201, result);
-    }
+// ----------------------------------------------------------------------------
+// Healthcheck Endpoints
+// ----------------------------------------------------------------------------
+const handleHealth = (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    service: 'college-sos-backend',
+    environment: process.env.NODE_ENV || 'production',
+    websocket: '/ws',
+    time: new Date().toISOString()
+  });
+};
+app.get('/health', handleHealth);
+app.get('/api/health', handleHealth);
 
-    if ((path === '/api/auth/login' || path === '/api/auth/demo') && req.method === 'POST') {
-      const b = await body(req);
-      const regd = String(b.regdNo || b.userId || b.id || '').trim();
-      const role = String(b.role || 'STUDENT').trim().toUpperCase();
+// ----------------------------------------------------------------------------
+// Configuration Endpoint
+// ----------------------------------------------------------------------------
+app.get('/api/config', (req, res) => {
+  res.status(200).json({
+    firebaseConfig: {
+      projectId: "college-sos-app-26aec",
+      appId: "1:888750165100:web:c5717332b893a6dc06dc49",
+      storageBucket: "college-sos-app-26aec.firebasestorage.app",
+      apiKey: "AIzaSyBsijDOP3woYoWK0An37rYTDu0zCWdeYhg",
+      authDomain: "college-sos-app-26aec.firebaseapp.com",
+      messagingSenderId: "888750165100",
+      measurementId: "G-7NKML0LRT6",
+      projectNumber: "888750165100"
+    },
+    vapidKey: process.env.FIREBASE_VAPID_KEY || ""
+  });
+});
 
-      if (!regd) {
-        return json(res, 400, { error: 'Registration / ID No. is required.' });
-      }
-
-      if (regd.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regd)) {
-        return json(res, 400, { error: 'Email addresses are not accepted. Please enter a valid Registration / ID No.' });
-      }
-
-      if (role === 'TEACHER') {
-        return json(res, 400, { error: 'Invalid role. Teacher role is not supported.' });
-      }
-      if (role !== 'STUDENT' && role !== 'RESPONDER') {
-        return json(res, 400, { error: 'Invalid role. Only Student and Emergency Responder roles are supported.' });
-      }
-
-      let u;
-      if (role === 'RESPONDER') {
-        const pin = b.pin || b.password;
-        u = await verifyResponderCredentials(regd, pin, b.name);
-      } else {
-        u = await verifyStudentCredentials(regd, b.name);
-      }
-      return json(res, 200, { token: issueToken(u), user: u });
-    }
-
-    if (path === '/api/auth/responder-login' && req.method === 'POST') {
-      const b = await body(req);
-      const id = String(b.responderId || b.regdNo || b.id || '').trim();
-      if (!id) return json(res, 400, { error: 'Responder ID is required' });
-      const u = await verifyResponderCredentials(id, b.pin || b.password, b.name);
-      return json(res, 200, { token: issueToken(u), user: u });
-    }
-
-    if (path === '/api/auth/users') return json(res, 200, []);
-    if (path === '/api/categories') return json(res, 200, categories);
-
-    // Service Worker route
-    if (path === '/firebase-messaging-sw.js') {
-      const swCandidates = [
-        join(process.cwd(), 'frontend', 'public', 'firebase-messaging-sw.js'),
-        join(process.cwd(), 'frontend', 'firebase-messaging-sw.js'),
-        join(process.cwd(), 'dist', 'firebase-messaging-sw.js')
-      ];
-      for (const swPath of swCandidates) {
-        if (existsSync(swPath)) {
-          res.writeHead(200, {
-            'content-type': 'application/javascript; charset=utf-8',
-            'Service-Worker-Allowed': '/',
-            'cache-control': 'no-cache, no-store, must-revalidate'
-          });
-          return res.end(readFileSync(swPath));
-        }
-      }
-    }
-
-    if (path === '/api/sos/stream' && req.method === 'GET') {
-      let uStream = null;
-      const tokenParam = url.searchParams.get('token');
-      if (tokenParam) req.headers.authorization = `Bearer ${tokenParam}`;
-      try {
-        uStream = authenticate(req);
-      } catch (err) {
-        return json(res, 401, { error: 'Authentication required for live stream' });
-      }
-
-      res.writeHead(200, {
-        'content-type': 'text/event-stream; charset=utf-8',
-        'cache-control': 'no-cache, no-transform',
-        'connection': 'keep-alive',
-        ...getCorsHeaders(req)
-      });
-      res.write(`data: ${JSON.stringify({ event: 'connection.ready', message: 'SSE stream connected', user: uStream.id })}\n\n`);
-
-      const client = { res, user: uStream };
-      sseGlobalClients.add(client);
-      console.log(`[SOS:Backend] Real-time SSE listener attached for user ${uStream.name} (${uStream.role})`);
-
-      req.on('close', () => {
-        sseGlobalClients.delete(client);
-        console.log(`[SOS:Backend] Real-time SSE listener closed for ${uStream.id}`);
-      });
-      return;
-    }
-
-    // Device delivery receipt & open auditing (Supports valid auth token or verified registered responder deviceId)
-    const receiptMatch = path.match(/^\/api\/sos\/([^/]+)\/(receipt|open)$/);
-    if (receiptMatch && req.method === 'POST') {
-      const [, incidentId, subAction] = receiptMatch;
-      const b = await body(req);
-      let actorId = RESPONDER_ID;
-      try {
-        const u = authenticate(req);
-        actorId = u.id;
-      } catch {
-        const devId = b.deviceId;
-        const isRegistered = await isRegisteredDeviceId(devId);
-        if (!isRegistered) {
-          return json(res, 401, { error: 'Authentication or registered responder device required' });
-        }
-      }
-
-      if (subAction === 'receipt') {
-        const rec = await recordDeviceReceipt({
-          incidentId,
-          deviceId: b.deviceId || req.socket.remoteAddress,
-          responderId: actorId,
-          clientTimestamp: b.clientTimestamp
-        });
-        return json(res, 200, rec);
-      } else if (subAction === 'open') {
-        const op = await recordDeviceOpen({
-          incidentId,
-          deviceId: b.deviceId || req.socket.remoteAddress,
-          responderId: actorId,
-          clientTimestamp: b.clientTimestamp
-        });
-        return json(res, 200, op);
-      }
-    }
-
-    // Twilio Voice TwiML webhook (Incident ID parameter)
-    const twimlCallMatch = path.match(/^\/api\/responder\/twiml\/emergency-call\/([^/]+)$/);
-    if (twimlCallMatch && (req.method === 'GET' || req.method === 'POST')) {
-      const [, incId] = twimlCallMatch;
-      try {
-        const db = await initDatabase();
-        const inc = await db.collection('incidents').findOne({ id: incId });
-        if (!inc) {
-          return xml(res, 404, '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Incident not found.</Say><Hangup/></Response>');
-        }
-        const twiml = generateEmergencyTwiML(inc);
-        return xml(res, 200, twiml);
-      } catch (err) {
-        return xml(res, 500, '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Error loading emergency alert.</Say><Hangup/></Response>');
-      }
-    }
-
-    // Twilio Gather IVR Response webhook (press 1 to acknowledge)
-    const twimlGatherMatch = path.match(/^\/api\/responder\/twiml\/gather-response\/([^/]+)$/);
-    if (twimlGatherMatch && req.method === 'POST') {
-      const [, incId] = twimlGatherMatch;
-      const b = await body(req);
-      const digits = b.Digits || b.digits || '';
-      const caller = b.From || b.from || b.Caller || 'Emergency Responder Phone';
-      const twimlResponse = await handleTwiMLGather(incId, digits, caller, broadcast);
-      return xml(res, 200, twimlResponse);
-    }
-
-    // Twilio SMS Delivery Status Callback
-    if (path === '/api/responder/twilio/sms-status-callback' && req.method === 'POST') {
-      const b = await body(req);
-      const smsSid = b.MessageSid || b.SmsSid;
-      const status = b.MessageStatus || b.SmsStatus;
-      const to = b.To || '';
-      if (status === 'delivered') {
-        await logNotificationAudit(b.incidentId || 'SMS_BROADCAST', ALERT_STATUSES.DEVICE_DELIVERY_CONFIRMED, {
-          channel: 'SMS',
-          provider: 'twilio',
-          messageSid: smsSid,
-          to: to.slice(0, 4) + '***' + to.slice(-3),
-          providerStatus: status,
-          timestamp: new Date().toISOString()
-        });
-      }
-      return json(res, 200, { received: true, sid: smsSid, status });
-    }
-
-    // Twilio Call Status Callback
-    if (path === '/api/responder/twilio/call-status-callback' && req.method === 'POST') {
-      const b = await body(req);
-      const callSid = b.CallSid;
-      const status = b.CallStatus;
-      const to = b.To || '';
-      await logNotificationAudit(b.incidentId || 'VOICE_CALL_BROADCAST', `VOICE_CALL_${(status || 'UNKNOWN').toUpperCase()}`, {
-        channel: 'VOICE_CALL',
-        provider: 'twilio',
-        callSid,
-        to: to.slice(0, 4) + '***' + to.slice(-3),
-        providerStatus: status,
-        duration: b.CallDuration || '0',
-        timestamp: new Date().toISOString()
-      });
-      return json(res, 200, { received: true, sid: callSid, status });
-    }
-
-    // Public / Durable Escalation Trigger Endpoint (Callable by Cloud Scheduler, cron, or testing)
-    if ((path === '/api/escalation/process' || path === '/api/escalation/tick') && req.method === 'POST') {
-      const results = await processEscalations(broadcast);
-      return json(res, 200, { success: true, ...results, timestamp: new Date().toISOString() });
-    }
-
-    if (path.startsWith('/api/')) {
-      const u = authenticate(req);
-
-      if (path === '/api/sos' && req.method === 'POST') {
-        console.log(`[SOS:Backend] 1. Received SOS creation request from ${u.name} (${u.id})`);
-        const result = await createIncident(await body(req), u, req.socket.remoteAddress);
-        console.log(`[SOS:Backend] 2. Incident created: ${result.id} (${result.priority}) at ${result.location.building}`);
-        broadcast(eventPayload('sos.created', result));
-        console.log(`[SOS:Backend] 3. Dispatched real-time broadcast to connected responder listeners`);
-        syncIncidentToFirestoreAdmin(result).catch(() => {});
-        sendEmergencySosNotification(result).then(fcmRes => {
-          console.log(`[SOS:Backend] 4. FCM push notification result: ${fcmRes.deliveredCount}/${fcmRes.totalDevices} delivered`);
-        }).catch(e => console.warn('[FCM] Push dispatch notice:', e.message));
-        return json(res, 201, result);
-      }
-
-      if (path === '/api/responder/device' && req.method === 'POST') {
-        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        const b = await body(req);
-        console.log(`[SOS:Backend] Registering device token for ${u.id} (Device ID: ${b.deviceId})`);
-        const reg = await registerResponderDevice({
-          responderId: u.id,
-          deviceId: b.deviceId,
-          fcmToken: b.fcmToken,
-          userAgent: req.headers['user-agent']
-        });
-        return json(res, 200, reg);
-      }
-
-      if (path.startsWith('/api/responder/device/') && req.method === 'DELETE') {
-        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        const devId = path.split('/')[4];
-        await unregisterResponderDevice(devId, u.id);
-        return json(res, 200, { success: true });
-      }
-
-      if (path === '/api/responder/devices' && req.method === 'GET') {
-        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        return json(res, 200, await getActiveResponderDevices(u.id));
-      }
-
-      if (path === '/api/responder/device/ping' && req.method === 'POST') {
-        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        const b = await body(req);
-        await updateDevicePing(b.deviceId, u.id);
-        return json(res, 200, { success: true, timestamp: new Date().toISOString() });
-      }
-
-      if (path === '/api/responder/escalate' && req.method === 'POST') {
-        if (!isResponder(u) && !isAdmin(u)) return json(res, 403, { error: 'Admin or Responder only' });
-        const results = await processEscalations(broadcast);
-        return json(res, 200, { success: true, ...results });
-      }
-
-      if (path === '/api/responder/phone' && req.method === 'POST') {
-        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        const b = await body(req);
-        const rawPhone = String(b.phone || b.phoneNumber || '').trim();
-        if (!rawPhone || !/^\+?[1-9]\d{7,14}$/.test(rawPhone.replace(/[\s\-()]/g, ''))) {
-          return json(res, 400, { error: 'Valid E.164 phone number is required (e.g. +1234567890)' });
-        }
-        const db = await initDatabase();
-        await db.collection('emergency_responders').updateOne(
-          { responderId: u.id },
-          { $set: { phone: rawPhone, updatedAt: new Date().toISOString() } },
-          { upsert: true }
-        );
-        return json(res, 200, { success: true, responderId: u.id, phone: rawPhone });
-      }
-
-      if (path === '/api/responder/phones' && req.method === 'GET') {
-        if (!isResponder(u) && !isAdmin(u)) return json(res, 403, { error: 'Access denied: Responder or Admin required' });
-        const phones = await getRegisteredResponderPhones();
-        return json(res, 200, { phones });
-      }
-
-      if (path === '/api/responder/test-alert' && req.method === 'POST') {
-        if (!isResponder(u)) return json(res, 403, { error: 'Access denied: Responder role required' });
-        console.log(`[SOS:Backend] Test drill emergency alert triggered by ${u.name}`);
-        const testIncident = {
-          id: 'TEST-' + Math.floor(1000 + Math.random() * 9000),
-          category_id: 'security',
-          priority: 'CRITICAL',
-          student_name: 'Test Emergency Drill',
-          student_id: 'DRILL-01',
-          location: { building: 'Command Center', floor: '1st Floor', room: 'Station 1' },
-          description: `Emergency test notification trigger for ${u.id}.`,
-          created_at: new Date().toISOString()
-        };
-        broadcast(eventPayload('sos.created', testIncident));
-        syncIncidentToFirestoreAdmin(testIncident).catch(() => {});
-        const fcmRes = await sendEmergencySosNotification(testIncident);
-        return json(res, 200, { success: true, fcm: fcmRes, testIncident });
-      }
-
-      if ((path === '/api/sos/my' || path === '/api/sos/active' || path === '/api/sos/admin') && req.method === 'GET') {
-        if (path.endsWith('/admin') && !isAdmin(u) && !isResponder(u) && u.role !== 'DEPARTMENT_HEAD') {
-          return json(res, 403, { error: 'Admin or Responder only' });
-        }
-        return json(res, 200, await listIncidents(u, Object.fromEntries(url.searchParams)));
-      }
-
-      if (path === '/api/sos/stats' && req.method === 'GET') {
-        if (!isAdmin(u) && !isResponder(u) && u.role !== 'DEPARTMENT_HEAD') {
-          return json(res, 403, { error: 'Admin or Responder only' });
-        }
-        return json(res, 200, await stats());
-      }
-
-      if (path === '/api/sos/export.csv' && req.method === 'GET') {
-        const csv = await exportCsv(u);
-        res.writeHead(200, {
-          'content-type': 'text/csv',
-          'content-disposition': 'attachment; filename="sos-incidents.csv"',
-          ...getCorsHeaders(req)
-        });
-        return res.end(csv);
-      }
-
-      const match = path.match(/^\/api\/sos\/([^/]+)(?:\/(accept|respond|arrive|resolve|cancel|location|verify-sound|notification-audit))?$/);
-      if (match) {
-        const [, id, action] = match;
-        if (req.method === 'GET' && !action) return json(res, 200, await getIncident(id, u));
-        if (action === 'verify-sound' && req.method === 'POST') {
-          const b = await body(req);
-          await logNotificationAudit(id, ALERT_STATUSES.AUDIBLE_SOUND_VERIFIED, {
-            deviceId: b.deviceId || 'manual-test-device',
-            verifiedBy: u.id,
-            verifiedByName: u.name,
-            notes: b.notes || 'Audible emergency siren sound playback verified on physical device',
-            timestamp: new Date().toISOString()
-          });
-          return json(res, 200, { success: true, incidentId: id, status: ALERT_STATUSES.AUDIBLE_SOUND_VERIFIED });
-        }
-        if (action === 'notification-audit' && req.method === 'GET') {
-          const db = await initDatabase();
-          const logs = await db.collection('notification_audit_logs').find({ incident_id: id }).sort({ timestamp: 1 }).toArray();
-          return json(res, 200, { incidentId: id, totalEvents: logs.length, events: logs });
-        }
-        if (req.method === 'DELETE' && !action) {
-          console.log(`[SOS:Backend] Received request to delete incident ${id} by ${u.name} (${u.id})`);
-          const resDel = await deleteIncident(id, u, req.socket.remoteAddress);
-          deleteIncidentFromFirestoreAdmin(resDel.id).catch(() => {});
-          if (resDel._id) deleteIncidentFromFirestoreAdmin(resDel._id).catch(() => {});
-          broadcast({ event: 'sos.deleted', id: resDel.id, _id: resDel._id, timestamp: new Date().toISOString() });
-          console.log(`[SOS:Backend] Permanently deleted incident ${resDel.id} (_id: ${resDel._id}) from MongoDB`);
-          return json(res, 200, { success: true, message: 'SOS alert deleted successfully.', id: resDel.id, _id: resDel._id });
-        }
-        if (action === 'location' && (req.method === 'PATCH' || req.method === 'PUT' || req.method === 'POST')) {
-          console.log(`[SOS:Backend] Received location update for incident ${id} by ${u.name} (${u.id})`);
-          const result = await updateIncidentLocation(id, await body(req), u, req.socket.remoteAddress);
-          broadcast(eventPayload('sos.location_updated', result));
-          syncIncidentToFirestoreAdmin(result).catch(() => {});
-          return json(res, 200, result);
-        }
-        if (req.method === 'POST' && action) {
-          const map = { accept: 'ACCEPTED', respond: 'RESPONDING', arrive: 'ARRIVED', resolve: 'RESOLVED', cancel: 'CANCELLED' };
-          const result = await changeStatus(id, map[action], await body(req), u, req.socket.remoteAddress);
-          if (action === 'accept') {
-            await logNotificationAudit(id, ALERT_STATUSES.RESPONDER_ACKNOWLEDGED, {
-              channel: 'WEB_OR_APP_DASHBOARD',
-              responderId: u.id,
-              responderName: u.name,
-              timestamp: new Date().toISOString()
-            });
-          }
-          broadcast(eventPayload(`sos.${action}`, result));
-          return json(res, 200, result);
-        }
-      }
-
-      return json(res, 404, { error: 'API route not found' });
-    }
-
-    // Static site routing
-    const dist = join(process.cwd(), 'dist');
-    const isResponderRoute = path === '/responder' || path.startsWith('/responder/');
-    const requested = (path === '/' || isResponderRoute) ? 'index.html' : normalize(path).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
-    const file = join(dist, requested);
-    const target = existsSync(file) ? file : join(dist, 'index.html');
-
-    if (existsSync(target)) {
-      const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
-      res.writeHead(200, { 'content-type': mime[extname(target)] || 'application/octet-stream' });
-      return res.end(readFileSync(target));
-    }
-
-    return json(res, 404, { error: 'Not found' });
-  } catch (e) {
-    json(res, e.status || 500, { error: e.status ? e.message : 'Internal server error', field: e.field, incidentId: e.incidentId });
+// ----------------------------------------------------------------------------
+// Authentication Endpoints
+// ----------------------------------------------------------------------------
+app.post('/api/auth/register', async (req, res, next) => {
+  try {
+    const result = await registerStudent(req.body || {});
+    return res.status(201).json(result);
+  } catch (err) {
+    next(err);
   }
 });
 
-const wss = new WebSocketServer({ noServer: true, handleProtocols: protocols => protocols.has('sos') ? 'sos' : false });
+const handleLogin = async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const regd = String(b.regdNo || b.userId || b.id || '').trim();
+    const role = String(b.role || 'STUDENT').trim().toUpperCase();
+
+    if (!regd) {
+      return res.status(400).json({ error: 'Registration / ID No. is required.' });
+    }
+
+    if (regd.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regd)) {
+      return res.status(400).json({ error: 'Email addresses are not accepted. Please enter a valid Registration / ID No.' });
+    }
+
+    if (role === 'TEACHER') {
+      return res.status(400).json({ error: 'Invalid role. Teacher role is not supported.' });
+    }
+    if (role !== 'STUDENT' && role !== 'RESPONDER') {
+      return res.status(400).json({ error: 'Invalid role. Only Student and Emergency Responder roles are supported.' });
+    }
+
+    let u;
+    if (role === 'RESPONDER') {
+      const pin = b.pin || b.password;
+      u = await verifyResponderCredentials(regd, pin, b.name);
+    } else {
+      u = await verifyStudentCredentials(regd, b.name);
+    }
+    return res.status(200).json({ token: issueToken(u), user: u });
+  } catch (err) {
+    next(err);
+  }
+};
+
+app.post('/api/auth/login', handleLogin);
+app.post('/api/auth/demo', handleLogin);
+
+app.post('/api/auth/responder-login', async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const id = String(b.responderId || b.regdNo || b.id || '').trim();
+    if (!id) return res.status(400).json({ error: 'Responder ID is required' });
+    const u = await verifyResponderCredentials(id, b.pin || b.password, b.name);
+    return res.status(200).json({ token: issueToken(u), user: u });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/auth/users', (req, res) => res.status(200).json([]));
+app.get('/api/categories', (req, res) => res.status(200).json(categories));
+
+// ----------------------------------------------------------------------------
+// Service Worker Route
+// ----------------------------------------------------------------------------
+app.get('/firebase-messaging-sw.js', (req, res) => {
+  const swCandidates = [
+    join(process.cwd(), 'frontend', 'public', 'firebase-messaging-sw.js'),
+    join(process.cwd(), 'frontend', 'firebase-messaging-sw.js'),
+    join(process.cwd(), 'dist', 'firebase-messaging-sw.js'),
+    join(__dirname, '..', 'frontend', 'public', 'firebase-messaging-sw.js'),
+    join(__dirname, '..', 'dist', 'firebase-messaging-sw.js')
+  ];
+  for (const swPath of swCandidates) {
+    if (existsSync(swPath)) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Service-Worker-Allowed', '/');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return res.send(readFileSync(swPath, 'utf8'));
+    }
+  }
+  res.status(404).json({ error: 'Service worker not found' });
+});
+
+// ----------------------------------------------------------------------------
+// SSE Real-Time Stream
+// ----------------------------------------------------------------------------
 const sseGlobalClients = new Set();
+
+app.get('/api/sos/stream', (req, res) => {
+  const tokenParam = req.query.token;
+  if (tokenParam) req.headers.authorization = `Bearer ${tokenParam}`;
+  let uStream = null;
+  try {
+    uStream = authenticate(req);
+  } catch (err) {
+    return res.status(401).json({ error: 'Authentication required for live stream' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    ...getCorsHeaders(req)
+  });
+  res.write(`data: ${JSON.stringify({ event: 'connection.ready', message: 'SSE stream connected', user: uStream.id })}\n\n`);
+
+  const client = { res, user: uStream };
+  sseGlobalClients.add(client);
+  console.log(`[SOS:Backend] Real-time SSE listener attached for user ${uStream.name} (${uStream.role})`);
+
+  req.on('close', () => {
+    sseGlobalClients.delete(client);
+    console.log(`[SOS:Backend] Real-time SSE listener closed for ${uStream.id}`);
+  });
+});
+
+// ----------------------------------------------------------------------------
+// Device delivery receipt & open auditing
+// ----------------------------------------------------------------------------
+const handleDeviceReceiptOrOpen = async (req, res, next) => {
+  try {
+    const { id: incidentId, action } = req.params;
+    if (action !== 'receipt' && action !== 'open') {
+      return next();
+    }
+    const b = req.body || {};
+    let actorId = RESPONDER_ID;
+    try {
+      const u = authenticate(req);
+      actorId = u.id;
+    } catch {
+      const devId = b.deviceId;
+      const isRegistered = await isRegisteredDeviceId(devId);
+      if (!isRegistered) {
+        return res.status(401).json({ error: 'Authentication or registered responder device required' });
+      }
+    }
+
+    if (action === 'receipt') {
+      const rec = await recordDeviceReceipt({
+        incidentId,
+        deviceId: b.deviceId || req.ip,
+        responderId: actorId,
+        clientTimestamp: b.clientTimestamp
+      });
+      return res.status(200).json(rec);
+    } else if (action === 'open') {
+      const op = await recordDeviceOpen({
+        incidentId,
+        deviceId: b.deviceId || req.ip,
+        responderId: actorId,
+        clientTimestamp: b.clientTimestamp
+      });
+      return res.status(200).json(op);
+    }
+  } catch (err) {
+    next(err);
+  }
+};
+app.post('/api/sos/:id/receipt', (req, res, next) => { req.params.action = 'receipt'; handleDeviceReceiptOrOpen(req, res, next); });
+app.post('/api/sos/:id/open', (req, res, next) => { req.params.action = 'open'; handleDeviceReceiptOrOpen(req, res, next); });
+
+// ----------------------------------------------------------------------------
+// Twilio Voice & SMS Webhooks
+// ----------------------------------------------------------------------------
+app.all('/api/responder/twiml/emergency-call/:id', async (req, res) => {
+  try {
+    const db = await initDatabase();
+    const inc = await db.collection('incidents').findOne({ id: req.params.id });
+    if (!inc) {
+      return res.status(404).set('Content-Type', 'application/xml; charset=utf-8').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Incident not found.</Say><Hangup/></Response>');
+    }
+    const twiml = generateEmergencyTwiML(inc);
+    return res.status(200).set('Content-Type', 'application/xml; charset=utf-8').send(twiml);
+  } catch (err) {
+    return res.status(500).set('Content-Type', 'application/xml; charset=utf-8').send('<?xml version="1.0" encoding="UTF-8"?><Response><Say>Error loading emergency alert.</Say><Hangup/></Response>');
+  }
+});
+
+app.post('/api/responder/twiml/gather-response/:id', async (req, res) => {
+  const incId = req.params.id;
+  const b = req.body || {};
+  const digits = b.Digits || b.digits || '';
+  const caller = b.From || b.from || b.Caller || 'Emergency Responder Phone';
+  const twimlResponse = await handleTwiMLGather(incId, digits, caller, broadcast);
+  return res.status(200).set('Content-Type', 'application/xml; charset=utf-8').send(twimlResponse);
+});
+
+app.post('/api/responder/twilio/sms-status-callback', async (req, res) => {
+  const b = req.body || {};
+  const smsSid = b.MessageSid || b.SmsSid;
+  const status = b.MessageStatus || b.SmsStatus;
+  const to = b.To || '';
+  if (status === 'delivered') {
+    await logNotificationAudit(b.incidentId || 'SMS_BROADCAST', ALERT_STATUSES.DEVICE_DELIVERY_CONFIRMED, {
+      channel: 'SMS',
+      provider: 'twilio',
+      messageSid: smsSid,
+      to: to.slice(0, 4) + '***' + to.slice(-3),
+      providerStatus: status,
+      timestamp: new Date().toISOString()
+    });
+  }
+  return res.status(200).json({ received: true, sid: smsSid, status });
+});
+
+app.post('/api/responder/twilio/call-status-callback', async (req, res) => {
+  const b = req.body || {};
+  const callSid = b.CallSid;
+  const status = b.CallStatus;
+  const to = b.To || '';
+  await logNotificationAudit(b.incidentId || 'VOICE_CALL_BROADCAST', `VOICE_CALL_${(status || 'UNKNOWN').toUpperCase()}`, {
+    channel: 'VOICE_CALL',
+    provider: 'twilio',
+    callSid,
+    to: to.slice(0, 4) + '***' + to.slice(-3),
+    providerStatus: status,
+    duration: b.CallDuration || '0',
+    timestamp: new Date().toISOString()
+  });
+  return res.status(200).json({ received: true, sid: callSid, status });
+});
+
+// ----------------------------------------------------------------------------
+// Escalation Process Endpoint
+// ----------------------------------------------------------------------------
+const handleEscalationProcess = async (req, res, next) => {
+  try {
+    const results = await processEscalations(broadcast);
+    return res.status(200).json({ success: true, ...results, timestamp: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+};
+app.post('/api/escalation/process', handleEscalationProcess);
+app.post('/api/escalation/tick', handleEscalationProcess);
+
+// ----------------------------------------------------------------------------
+// SOS & Responder Operations
+// ----------------------------------------------------------------------------
+app.post('/api/sos', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    console.log(`[SOS:Backend] 1. Received SOS creation request from ${u.name} (${u.id})`);
+    const result = await createIncident(req.body || {}, u, req.ip);
+    console.log(`[SOS:Backend] 2. Incident created: ${result.id} (${result.priority}) at ${result.location.building}`);
+    broadcast(eventPayload('sos.created', result));
+    console.log(`[SOS:Backend] 3. Dispatched real-time broadcast to connected responder listeners`);
+    syncIncidentToFirestoreAdmin(result).catch(() => {});
+    sendEmergencySosNotification(result).then(fcmRes => {
+      console.log(`[SOS:Backend] 4. FCM push notification result: ${fcmRes.deliveredCount}/${fcmRes.totalDevices} delivered`);
+    }).catch(e => console.warn('[FCM] Push dispatch notice:', e.message));
+    return res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/responder/device', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u)) return res.status(403).json({ error: 'Access denied: Responder role required' });
+    const b = req.body || {};
+    console.log(`[SOS:Backend] Registering device token for ${u.id} (Device ID: ${b.deviceId})`);
+    const reg = await registerResponderDevice({
+      responderId: u.id,
+      deviceId: b.deviceId,
+      fcmToken: b.fcmToken,
+      userAgent: req.headers['user-agent']
+    });
+    return res.status(200).json(reg);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/responder/device/:id', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u)) return res.status(403).json({ error: 'Access denied: Responder role required' });
+    await unregisterResponderDevice(req.params.id, u.id);
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/responder/devices', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u)) return res.status(403).json({ error: 'Access denied: Responder role required' });
+    return res.status(200).json(await getActiveResponderDevices(u.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/responder/device/ping', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u)) return res.status(403).json({ error: 'Access denied: Responder role required' });
+    await updateDevicePing(req.body?.deviceId, u.id);
+    return res.status(200).json({ success: true, timestamp: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/responder/escalate', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u) && !isAdmin(u)) return res.status(403).json({ error: 'Admin or Responder only' });
+    const results = await processEscalations(broadcast);
+    return res.status(200).json({ success: true, ...results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/responder/phone', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u)) return res.status(403).json({ error: 'Access denied: Responder role required' });
+    const rawPhone = String(req.body?.phone || req.body?.phoneNumber || '').trim();
+    if (!rawPhone || !/^\+?[1-9]\d{7,14}$/.test(rawPhone.replace(/[\s\-()]/g, ''))) {
+      return res.status(400).json({ error: 'Valid E.164 phone number is required (e.g. +1234567890)' });
+    }
+    const db = await initDatabase();
+    await db.collection('emergency_responders').updateOne(
+      { responderId: u.id },
+      { $set: { phone: rawPhone, updatedAt: new Date().toISOString() } },
+      { upsert: true }
+    );
+    return res.status(200).json({ success: true, responderId: u.id, phone: rawPhone });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/responder/phones', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u) && !isAdmin(u)) return res.status(403).json({ error: 'Access denied: Responder or Admin required' });
+    const phones = await getRegisteredResponderPhones();
+    return res.status(200).json({ phones });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/responder/test-alert', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isResponder(u)) return res.status(403).json({ error: 'Access denied: Responder role required' });
+    console.log(`[SOS:Backend] Test drill emergency alert triggered by ${u.name}`);
+    const testIncident = {
+      id: 'TEST-' + Math.floor(1000 + Math.random() * 9000),
+      category_id: 'security',
+      priority: 'CRITICAL',
+      student_name: 'Test Emergency Drill',
+      student_id: 'DRILL-01',
+      location: { building: 'Command Center', floor: '1st Floor', room: 'Station 1' },
+      description: `Emergency test notification trigger for ${u.id}.`,
+      created_at: new Date().toISOString()
+    };
+    broadcast(eventPayload('sos.created', testIncident));
+    syncIncidentToFirestoreAdmin(testIncident).catch(() => {});
+    const fcmRes = await sendEmergencySosNotification(testIncident);
+    return res.status(200).json({ success: true, fcm: fcmRes, testIncident });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const handleListIncidents = async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (req.path.endsWith('/admin') && !isAdmin(u) && !isResponder(u) && u.role !== 'DEPARTMENT_HEAD') {
+      return res.status(403).json({ error: 'Admin or Responder only' });
+    }
+    return res.status(200).json(await listIncidents(u, req.query));
+  } catch (err) {
+    next(err);
+  }
+};
+app.get('/api/sos/my', handleListIncidents);
+app.get('/api/sos/active', handleListIncidents);
+app.get('/api/sos/admin', handleListIncidents);
+
+app.get('/api/sos/stats', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    if (!isAdmin(u) && !isResponder(u) && u.role !== 'DEPARTMENT_HEAD') {
+      return res.status(403).json({ error: 'Admin or Responder only' });
+    }
+    return res.status(200).json(await stats());
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/sos/export.csv', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    const csv = await exportCsv(u);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="sos-incidents.csv"');
+    return res.status(200).send(csv);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Sound-Verify, Notification-Audit, Location
+app.post('/api/sos/:id/verify-sound', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    const id = req.params.id;
+    const b = req.body || {};
+    await logNotificationAudit(id, ALERT_STATUSES.AUDIBLE_SOUND_VERIFIED, {
+      deviceId: b.deviceId || 'manual-test-device',
+      verifiedBy: u.id,
+      verifiedByName: u.name,
+      notes: b.notes || 'Audible emergency siren sound playback verified on physical device',
+      timestamp: new Date().toISOString()
+    });
+    return res.status(200).json({ success: true, incidentId: id, status: ALERT_STATUSES.AUDIBLE_SOUND_VERIFIED });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/sos/:id/notification-audit', async (req, res, next) => {
+  try {
+    const db = await initDatabase();
+    const logs = await db.collection('notification_audit_logs').find({ incident_id: req.params.id }).sort({ timestamp: 1 }).toArray();
+    return res.status(200).json({ incidentId: req.params.id, totalEvents: logs.length, events: logs });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const handleLocationUpdate = async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    const id = req.params.id;
+    console.log(`[SOS:Backend] Received location update for incident ${id} by ${u.name} (${u.id})`);
+    const result = await updateIncidentLocation(id, req.body || {}, u, req.ip);
+    broadcast(eventPayload('sos.location_updated', result));
+    syncIncidentToFirestoreAdmin(result).catch(() => {});
+    return res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+};
+app.post('/api/sos/:id/location', handleLocationUpdate);
+app.put('/api/sos/:id/location', handleLocationUpdate);
+app.patch('/api/sos/:id/location', handleLocationUpdate);
+
+// Status transition actions: accept, respond, arrive, resolve, cancel
+const statusActions = ['accept', 'respond', 'arrive', 'resolve', 'cancel'];
+app.post('/api/sos/:id/:action', async (req, res, next) => {
+  const { id, action } = req.params;
+  if (!statusActions.includes(action)) {
+    return next();
+  }
+  try {
+    const u = authenticate(req);
+    const map = { accept: 'ACCEPTED', respond: 'RESPONDING', arrive: 'ARRIVED', resolve: 'RESOLVED', cancel: 'CANCELLED' };
+    const result = await changeStatus(id, map[action], req.body || {}, u, req.ip);
+    if (action === 'accept') {
+      await logNotificationAudit(id, ALERT_STATUSES.RESPONDER_ACKNOWLEDGED, {
+        channel: 'WEB_OR_APP_DASHBOARD',
+        responderId: u.id,
+        responderName: u.name,
+        timestamp: new Date().toISOString()
+      });
+    }
+    broadcast(eventPayload(`sos.${action}`, result));
+    return res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Single Incident Detail and Delete
+app.get('/api/sos/:id', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    return res.status(200).json(await getIncident(req.params.id, u));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/sos/:id', async (req, res, next) => {
+  try {
+    const u = authenticate(req);
+    const id = req.params.id;
+    console.log(`[SOS:Backend] Received request to delete incident ${id} by ${u.name} (${u.id})`);
+    const resDel = await deleteIncident(id, u, req.ip);
+    deleteIncidentFromFirestoreAdmin(resDel.id).catch(() => {});
+    if (resDel._id) deleteIncidentFromFirestoreAdmin(resDel._id).catch(() => {});
+    broadcast({ event: 'sos.deleted', id: resDel.id, _id: resDel._id, timestamp: new Date().toISOString() });
+    console.log(`[SOS:Backend] Permanently deleted incident ${resDel.id} (_id: ${resDel._id}) from MongoDB`);
+    return res.status(200).json({ success: true, message: 'SOS alert deleted successfully.', id: resDel.id, _id: resDel._id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// Static Assets & Fallback SPA Route
+// ----------------------------------------------------------------------------
+const distCandidates = [
+  join(process.cwd(), 'dist'),
+  join(process.cwd(), 'sos-', 'dist'),
+  join(__dirname, '..', 'dist'),
+  join(__dirname, '..', 'frontend', 'dist')
+];
+let distDir = distCandidates.find(d => existsSync(d));
+
+if (distDir) {
+  app.use(express.static(distDir));
+  app.use((req, res, next) => {
+    if (req.method !== 'GET') return next();
+    if (req.path.startsWith('/api/')) return next();
+    const indexPath = join(distDir, 'index.html');
+    if (existsSync(indexPath)) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.sendFile(indexPath);
+    }
+    next();
+  });
+}
+
+// 404 for unhandled API routes
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'API route not found' });
+});
+
+// Centralized Express Error Handler
+app.use((err, req, res, next) => {
+  const status = Number(err.status || err.statusCode || 500);
+  const message = (status < 500 || err.status) ? err.message : 'Internal server error';
+  if (status >= 500) {
+    console.error(`[SOS:Error] Server error on ${req.method} ${req.path}:`, err.message);
+  }
+  res.status(status).json({
+    error: message,
+    field: err.field,
+    incidentId: err.incidentId
+  });
+});
+
+// ----------------------------------------------------------------------------
+// WebSockets & Heartbeat
+// ----------------------------------------------------------------------------
+const wss = new WebSocketServer({ noServer: true, handleProtocols: protocols => protocols.has('sos') ? 'sos' : false });
 
 function allowed(user, event) {
   if (!user) return false;
@@ -669,9 +842,34 @@ const heartbeat = setInterval(() => {
 }, 30000);
 heartbeat.unref();
 
-await initDatabase();
-initFirebaseAdmin();
-await ensurePermanentResponder();
-startEscalationWorker(5000, broadcast);
+// ----------------------------------------------------------------------------
+// Server Startup & Graceful Shutdown
+// ----------------------------------------------------------------------------
+try {
+  await initDatabase();
+  initFirebaseAdmin();
+  await ensurePermanentResponder();
+  startEscalationWorker(5000, broadcast);
 
-server.listen(port, '0.0.0.0', () => console.log(`SOS server listening on port ${port} with WebSocket notifications at /ws`));
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`[SOS:Express] Backend server listening on port ${port} on 0.0.0.0`);
+    console.log(`[SOS:Express] Health checks available at /health and /api/health`);
+    console.log(`[SOS:Express] WebSocket server ready at /ws`);
+  });
+} catch (startupErr) {
+  console.error('[SOS:StartupError] Failed to initialize backend server:', startupErr);
+  process.exit(1);
+}
+
+const gracefulShutdown = () => {
+  console.log('[SOS:Shutdown] Received shutdown signal. Closing servers gracefully...');
+  clearInterval(heartbeat);
+  stopEscalationWorker();
+  server.close(() => {
+    console.log('[SOS:Shutdown] Server closed cleanly.');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);

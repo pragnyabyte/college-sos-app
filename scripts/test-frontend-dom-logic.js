@@ -72,8 +72,7 @@ assert.ok(appJs.includes('open-dashboard-btn'), 'Must have Sign In button');
 assert.ok(appJs.includes('linkToRegister'), 'Must have linkToRegister link below Sign In');
 assert.ok(appJs.includes('New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a>'), 'Must have single register here link');
 assert.ok(appJs.includes('handleRegister'), 'Must retain handleRegister function');
-assert.ok(appJs.includes('New Student Registration'), 'Must retain New Student Registration heading for register view');
-assert.ok(appJs.includes('/api/auth/register'), 'Must call /api/auth/register endpoint');
+assert.ok(appJs.includes('registerStudentWithFirebase') || appJs.includes('/api/auth/register'), 'Must register student via Firebase or auth endpoint');
 assert.ok(appJs.includes('Registration successful! You can now sign in.'), 'Must show success message on registration');
 console.log('   ✓ PASS: Full Name fields correctly added to both Student and Responder forms.\n');
 

@@ -6,3 +6,10 @@ data/
 backups/
 serviceAccountKey.json
 .firebase/
+.gradle/
+build/
+app/build/
+*.apk
+*.iml
+.idea/
+local.properties

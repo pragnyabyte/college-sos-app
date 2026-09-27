@@ -1,6 +1,6 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage, isSupported } from 'firebase/messaging';
-import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
 
 export const firebaseConfig = {
   projectId: "college-sos-app-26aec",
@@ -106,36 +106,6 @@ export async function setupResponderFCM({ vapidKey, onMessageReceived, onTokenRe
   }
 }
 
-/**
- * Syncs the FCM token with the backend for the authenticated emergency responder.
- */
-export async function syncResponderDeviceWithBackend(token, authToken) {
-  if (!token) return;
-  const deviceId = getDeviceId();
-  try {
-    const rawApiUrl = (import.meta.env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
-    const isStaticHost = typeof location !== 'undefined' && (location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com'));
-    if (isStaticHost && !rawApiUrl) return;
-
-    const endpoint = rawApiUrl ? `${rawApiUrl}/api/responder/device` : '/api/responder/device';
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${authToken}`
-      },
-      body: JSON.stringify({
-        deviceId,
-        fcmToken: token
-      })
-    });
-    const data = await res.json();
-    return data;
-  } catch (e) {
-    console.warn('[FCM] Device sync with backend failed:', e.message);
-  }
-}
-
 let firestoreDb = null;
 
 export function getFirebaseFirestore() {
@@ -149,39 +119,356 @@ export function getFirebaseFirestore() {
   return firestoreDb;
 }
 
-/**
- * Syncs an emergency incident to Cloud Firestore under collection 'incidents'.
- */
-export async function syncIncidentToFirestore(incident) {
-  try {
-    const db = getFirebaseFirestore();
-    if (!db) return false;
-    const docRef = doc(db, 'incidents', String(incident.id));
-    const creationTime = incident.created_at || incident.createdAt || new Date().toISOString();
-    const docData = {
-      id: String(incident.id),
-      category_id: String(incident.category_id || incident.categoryId || 'other'),
-      student_id: String(incident.student_id || incident.studentId || ''),
-      student_name: String(incident.student_name || incident.studentName || 'Student'),
-      description: String(incident.description || ''),
-      location: incident.location || { building: 'Campus' },
-      priority: String(incident.priority || 'HIGH'),
-      status: String(incident.status || 'DEPARTMENT_NOTIFIED'),
-      created_at: creationTime,
-      createdAt: creationTime,
-      updated_at: new Date().toISOString()
-    };
-    await setDoc(docRef, docData, { merge: true });
-    console.log('%c[SOS:Firestore] Incident document successfully written to Firestore: ' + incident.id, 'color:#10b981;font-weight:bold');
-    return true;
-  } catch (err) {
-    console.warn('[SOS:Firestore] Notice writing incident to Firestore:', err.message);
-    return false;
-  }
+export function normalizeRegdNo(id) {
+  return String(id || '').trim().toUpperCase();
 }
 
 /**
- * Permanently deletes an emergency incident from Cloud Firestore under collection 'incidents'.
+ * Registers a new student securely in Cloud Firestore ('students' collection).
+ * Prevents duplicate registration IDs.
+ */
+export async function registerStudentWithFirebase({ name, regdNo }) {
+  const cleanName = String(name || '').trim();
+  const rawId = String(regdNo || '').trim();
+  const cleanId = normalizeRegdNo(rawId);
+
+  if (!cleanName) {
+    throw Object.assign(new Error('Full Name is required'), { status: 400, field: 'name' });
+  }
+  if (!cleanId) {
+    throw Object.assign(new Error('Registration / ID No. is required'), { status: 400, field: 'registration_number' });
+  }
+  if (cleanId.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanId)) {
+    throw Object.assign(new Error('Email addresses are not accepted. Please enter a valid Registration / ID No.'), { status: 400, field: 'registration_number' });
+  }
+  if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(cleanId)) {
+    throw Object.assign(new Error('Invalid Registration Number format. Format must be an ID, Roll No., or Regd. No.'), { status: 400, field: 'registration_number' });
+  }
+  if (cleanId === 'RESP-1111') {
+    throw Object.assign(new Error('This registration ID is reserved for emergency services.'), { status: 403, field: 'registration_number' });
+  }
+
+  const db = getFirebaseFirestore();
+  if (!db) {
+    throw new Error('Firebase Firestore service is not initialized');
+  }
+
+  const studentRef = doc(db, 'students', cleanId);
+  const snap = await getDoc(studentRef);
+  if (snap.exists()) {
+    throw Object.assign(new Error('This registration ID is already registered. Please sign in.'), { status: 409, field: 'registration_number' });
+  }
+
+  const accountId = 'STU-' + (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
+  const now = new Date().toISOString();
+  const studentDoc = {
+    name: cleanName,
+    regdNo: cleanId,
+    role: 'STUDENT',
+    departmentId: null,
+    accountId,
+    createdAt: now,
+    status: 'active'
+  };
+
+  await setDoc(studentRef, studentDoc);
+  console.log(`%c[SOS:Firebase] Registered new student in Cloud Firestore: ${cleanName} (${cleanId})`, 'color:#10b981;font-weight:bold');
+
+  return {
+    success: true,
+    message: 'Registration successful! You can now sign in.',
+    student: {
+      name: cleanName,
+      regdNo: cleanId,
+      createdAt: now,
+      accountId
+    }
+  };
+}
+
+/**
+ * Verifies student credentials against Cloud Firestore.
+ */
+export async function verifyStudentWithFirebase(regdNo, enteredName = null) {
+  const cleanId = normalizeRegdNo(regdNo);
+  const cleanName = String(enteredName || '').trim();
+
+  if (!cleanId) {
+    throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400, field: 'registration_number' });
+  }
+  if (cleanId.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanId)) {
+    throw Object.assign(new Error('Email addresses are not accepted. Please enter a valid Registration / ID No.'), { status: 400, field: 'registration_number' });
+  }
+  if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(cleanId)) {
+    throw Object.assign(new Error('Invalid Registration Number'), { status: 400, field: 'registration_number' });
+  }
+
+  const db = getFirebaseFirestore();
+  if (!db) {
+    throw new Error('Firebase Firestore service is not initialized');
+  }
+
+  const studentRef = doc(db, 'students', cleanId);
+  const snap = await getDoc(studentRef);
+
+  if (!snap.exists()) {
+    throw Object.assign(new Error('Student not registered. Please register first.'), { status: 404, field: 'registration_number' });
+  }
+
+  const student = snap.data();
+  if (cleanName && student.name) {
+    if (cleanName.toLowerCase() !== String(student.name).trim().toLowerCase()) {
+      throw Object.assign(new Error('Entered name does not match our records for this Registration ID.'), { status: 401, field: 'name' });
+    }
+  }
+
+  const user = {
+    id: student.regdNo,
+    name: student.name,
+    role: 'STUDENT',
+    departmentId: null,
+    accountId: student.accountId || cleanId
+  };
+
+  const token = 'sos-student-token-' + cleanId + '-' + Date.now();
+  return { user, token };
+}
+
+/**
+ * Authenticates Emergency Responder credentials against Firestore.
+ */
+export async function verifyResponderWithFirebase(responderId, pin, enteredName = null) {
+  const id = String(responderId || '').trim();
+  const cleanPin = String(pin || '').trim();
+
+  if (!id) {
+    throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400, field: 'registration_number' });
+  }
+  if (!cleanPin) {
+    throw Object.assign(new Error('Responder PIN is required.'), { status: 400, field: 'pin' });
+  }
+
+  if (id !== 'RESP-1111') {
+    throw Object.assign(new Error('Invalid Registration Number'), { status: 401, field: 'registration_number' });
+  }
+  if (cleanPin !== '2026') {
+    throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
+  }
+
+  const name = enteredName || 'Campus Emergency Response Unit (RESP-1111)';
+  const user = {
+    id: 'RESP-1111',
+    name,
+    role: 'RESPONDER',
+    departmentId: 'DEPT_SECURITY'
+  };
+
+  try {
+    const db = getFirebaseFirestore();
+    if (db) {
+      const respRef = doc(db, 'emergency_responders', 'RESP-1111');
+      await setDoc(respRef, {
+        responderId: 'RESP-1111',
+        name,
+        role: 'RESPONDER',
+        departmentId: 'DEPT_SECURITY',
+        authorized: true,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    }
+  } catch (e) {
+    console.warn('[SOS:Firebase] Responder doc sync notice:', e.message);
+  }
+
+  const token = 'sos-resp-token-RESP-1111-' + Date.now();
+  return { user, token };
+}
+
+/**
+ * Creates an emergency incident directly in Cloud Firestore.
+ */
+export async function createIncidentInFirestore(payload, user) {
+  if (!user) throw new Error('Authentication required');
+  const db = getFirebaseFirestore();
+  if (!db) throw new Error('Firebase Firestore service is not initialized');
+
+  const b = payload || {};
+  const loc = b.location || {};
+  const building = String(loc.building || '').trim();
+  const floor = String(loc.floor || '').trim();
+  const room = String(loc.room || '').trim();
+
+  const isOneClickGeneral = b.categoryId === 'general' && loc.source === 'Student Dashboard — Send SOS Now';
+  if (!isOneClickGeneral) {
+    if (!building || !floor || !room) {
+      throw Object.assign(new Error('Building, floor, and room are required fields.'), {
+        status: 400,
+        field: !building ? 'building' : (!floor ? 'floor' : 'room')
+      });
+    }
+  }
+
+  const now = new Date().toISOString();
+  const incidentId = 'SOS-' + String(Math.floor(100 + Math.random() * 900));
+  const categoryId = b.categoryId || 'other';
+
+  const catMap = {
+    medical: { priority: 'CRITICAL', primary: 'DEPT_MEDICAL', depts: ['DEPT_MEDICAL'] },
+    security: { priority: 'HIGH', primary: 'DEPT_SECURITY', depts: ['DEPT_SECURITY'] },
+    fire: { priority: 'CRITICAL', primary: 'DEPT_FIRE', depts: ['DEPT_FIRE', 'DEPT_SECURITY', 'DEPT_ADMIN'] },
+    harassment: { priority: 'HIGH', primary: 'DEPT_WELFARE', depts: ['DEPT_WELFARE', 'DEPT_SECURITY'] },
+    electrical: { priority: 'HIGH', primary: 'DEPT_ELECTRICAL', depts: ['DEPT_ELECTRICAL'] },
+    infrastructure: { priority: 'HIGH', primary: 'DEPT_MAINTENANCE', depts: ['DEPT_MAINTENANCE'] },
+    trapped: { priority: 'HIGH', primary: 'DEPT_SECURITY', depts: ['DEPT_SECURITY', 'DEPT_MAINTENANCE'] },
+    general: { priority: 'HIGH', primary: 'DEPT_SECURITY', depts: ['DEPT_SECURITY', 'DEPT_ADMIN'] },
+    other: { priority: 'MEDIUM', primary: 'DEPT_ADMIN', depts: ['DEPT_ADMIN'] }
+  };
+  const catInfo = catMap[categoryId] || catMap.other;
+
+  const lat = loc.latitude != null && Number.isFinite(Number(loc.latitude)) ? Number(loc.latitude) : null;
+  const lng = loc.longitude != null && Number.isFinite(Number(loc.longitude)) ? Number(loc.longitude) : null;
+  const acc = loc.accuracy != null && Number.isFinite(Number(loc.accuracy)) ? Number(loc.accuracy) : null;
+
+  const incidentDoc = {
+    id: incidentId,
+    category_id: categoryId,
+    student_id: user.id,
+    student_name: user.name,
+    description: String(b.description || '').trim(),
+    location: {
+      building: building || (lat != null ? 'Campus (GPS Coordinates Attached)' : 'Campus'),
+      floor: floor || (lat != null ? 'Ground / Outdoors' : ''),
+      room: room || (lat != null ? 'Live GPS Location' : ''),
+      area: String(loc.area || room || '').trim(),
+      latitude: lat,
+      longitude: lng,
+      accuracy: acc,
+      locationStatus: loc.locationStatus || (lat != null ? 'available' : 'unavailable'),
+      gpsTimestamp: loc.gpsTimestamp || null,
+      source: loc.source || (lat != null ? 'GPS' : 'MANUAL')
+    },
+    priority: catInfo.priority,
+    status: 'DEPARTMENT_NOTIFIED',
+    primary_department_id: catInfo.primary,
+    assigned_departments: catInfo.depts,
+    assignedDepartments: catInfo.depts,
+    created_at: now,
+    createdAt: now,
+    updated_at: now,
+    timeline: [
+      { status: 'DEPARTMENT_NOTIFIED', timestamp: now, note: 'Emergency SOS initiated by student' }
+    ]
+  };
+
+  const docRef = doc(db, 'incidents', incidentId);
+  await setDoc(docRef, incidentDoc);
+  console.log(`%c[SOS:Firebase] Incident successfully saved to Cloud Firestore: ${incidentId}`, 'color:#059669;font-weight:bold', incidentDoc);
+
+  return incidentDoc;
+}
+
+/**
+ * Retrieves incidents from Cloud Firestore for the authenticated user.
+ */
+export async function fetchIncidentsFromFirestore(user) {
+  if (!user) return [];
+  const db = getFirebaseFirestore();
+  if (!db) return [];
+
+  const isResp = String(user.role).toUpperCase() === 'RESPONDER' || user.id === 'RESP-1111';
+  const isAdmin = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(user.role).toUpperCase());
+
+  const colRef = collection(db, 'incidents');
+  let q;
+  if (isResp || isAdmin) {
+    q = query(colRef);
+  } else {
+    q = query(colRef, where('student_id', '==', user.id));
+  }
+
+  const snap = await getDocs(q);
+  const incidents = [];
+  snap.forEach((d) => {
+    const data = d.data();
+    if (!data.id) data.id = d.id;
+    if (!data.created_at && data.createdAt) data.created_at = data.createdAt;
+    incidents.push(data);
+  });
+
+  incidents.sort((a, b) => {
+    const tA = new Date(a.created_at || a.createdAt || 0).getTime();
+    const tB = new Date(b.created_at || b.createdAt || 0).getTime();
+    return tB - tA;
+  });
+
+  return incidents;
+}
+
+export async function fetchIncidentFromFirestore(incidentId) {
+  const db = getFirebaseFirestore();
+  if (!db) return null;
+  const docRef = doc(db, 'incidents', String(incidentId));
+  const snap = await getDoc(docRef);
+  return snap.exists() ? snap.data() : null;
+}
+
+/**
+ * Updates incident status in Cloud Firestore (accept, respond, arrive, resolve, cancel).
+ */
+export async function updateIncidentStatusInFirestore(incidentId, status, payload = {}, user = null) {
+  const db = getFirebaseFirestore();
+  if (!db) throw new Error('Firebase Firestore service is not initialized');
+
+  const docRef = doc(db, 'incidents', String(incidentId));
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) {
+    throw Object.assign(new Error('Incident not found'), { status: 404 });
+  }
+
+  const inc = snap.data();
+  const now = new Date().toISOString();
+  const timeline = Array.isArray(inc.timeline) ? [...inc.timeline] : [];
+  timeline.push({
+    status,
+    timestamp: now,
+    actor: user ? user.name : 'Emergency Responder',
+    note: payload.note || payload.reason || ''
+  });
+
+  const updates = {
+    status,
+    updated_at: now,
+    timeline
+  };
+  if (status === 'ACCEPTED' && user) {
+    updates.accepted_by = user.name;
+    updates.responder_id = user.id;
+  }
+
+  await setDoc(docRef, updates, { merge: true });
+  return { ...inc, ...updates };
+}
+
+/**
+ * Updates incident location in Cloud Firestore.
+ */
+export async function updateIncidentLocationInFirestore(incidentId, location, user = null) {
+  const db = getFirebaseFirestore();
+  if (!db) throw new Error('Firebase Firestore service is not initialized');
+
+  const docRef = doc(db, 'incidents', String(incidentId));
+  const now = new Date().toISOString();
+  const updates = {
+    location,
+    updated_at: now
+  };
+  await setDoc(docRef, updates, { merge: true });
+  const snap = await getDoc(docRef);
+  return snap.data();
+}
+
+/**
+ * Deletes an incident document from Cloud Firestore.
  */
 export async function deleteIncidentFromFirestore(incidentId) {
   try {
@@ -193,6 +480,45 @@ export async function deleteIncidentFromFirestore(incidentId) {
     return true;
   } catch (err) {
     console.warn('[SOS:Firestore] Notice deleting incident from Firestore:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Registers responder device push token in Firestore ('responder_devices' collection).
+ */
+export async function registerResponderDeviceFirestore(fcmToken, responderId = 'RESP-1111') {
+  if (!fcmToken) return;
+  const deviceId = getDeviceId();
+  try {
+    const db = getFirebaseFirestore();
+    if (!db) return;
+    const docRef = doc(db, 'responder_devices', String(deviceId));
+    await setDoc(docRef, {
+      deviceId,
+      fcmToken,
+      responderId,
+      platform: 'web',
+      userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+    console.log('%c[SOS:FCM] Responder device push token saved in Cloud Firestore: ' + deviceId, 'color:#10b981');
+  } catch (err) {
+    console.warn('[SOS:FCM] Note on device registration in Firestore:', err.message);
+  }
+}
+
+/**
+ * Backward compatibility alias for syncIncidentToFirestore.
+ */
+export async function syncIncidentToFirestore(incident) {
+  try {
+    const db = getFirebaseFirestore();
+    if (!db) return false;
+    const docRef = doc(db, 'incidents', String(incident.id));
+    await setDoc(docRef, incident, { merge: true });
+    return true;
+  } catch (err) {
     return false;
   }
 }

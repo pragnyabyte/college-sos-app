@@ -34,25 +34,15 @@ class SosFirebaseMessagingService : FirebaseMessagingService() {
         val prefs = PreferencesManager.getInstance(applicationContext)
         prefs.fcmToken = token
 
-        // If responder is authenticated, sync new token to MongoDB backend
+        // If responder is authenticated, sync new token to Cloud Firestore
         if (prefs.isLoggedIn) {
             serviceScope.launch {
                 try {
-                    val api = ApiClient.getInstance(applicationContext).getService()
-                    val req = DeviceRegisterRequest(
-                        deviceId = prefs.deviceId,
-                        installationId = prefs.deviceId,
-                        fcmToken = token,
-                        platform = "android",
-                        appVersion = "1.0.0",
-                        model = "${Build.MANUFACTURER} ${Build.MODEL}"
-                    )
-                    val res = api.registerDevice(req)
-                    if (res.isSuccessful) {
-                        Log.d(TAG, "Device FCM token successfully synced to backend for ${prefs.responderId}")
-                    }
+                    val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(applicationContext)
+                    firebaseRepo.registerDeviceToken(token, prefs.responderId)
+                    Log.d(TAG, "Device FCM token successfully synced to Cloud Firestore for ${prefs.responderId}")
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed syncing FCM token to backend: ${e.message}")
+                    Log.w(TAG, "Failed syncing FCM token to Firestore: ${e.message}")
                 }
             }
         }
@@ -77,18 +67,12 @@ class SosFirebaseMessagingService : FirebaseMessagingService() {
 
         val prefs = PreferencesManager.getInstance(applicationContext)
 
-        // 1. Send immediate delivery receipt back to backend for audit logging
+        // 1. Send immediate delivery receipt to Cloud Firestore for audit logging
         serviceScope.launch {
             try {
-                val api = ApiClient.getInstance(applicationContext).getService()
-                api.reportReceipt(
-                    id = sosId,
-                    req = AuditReceiptRequest(
-                        deviceId = prefs.deviceId,
-                        clientTimestamp = System.currentTimeMillis().toString()
-                    )
-                )
-                Log.d(TAG, "Delivery receipt reported to backend for incident $sosId")
+                val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(applicationContext)
+                firebaseRepo.reportReceipt(sosId)
+                Log.d(TAG, "Delivery receipt reported to Firestore for incident $sosId")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed reporting delivery receipt: ${e.message}")
             }

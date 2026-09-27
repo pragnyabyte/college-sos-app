@@ -17,13 +17,15 @@ import androidx.core.app.NotificationCompat
 import com.emergencysos.responder.EmergencySosApp
 import com.emergencysos.responder.R
 import com.emergencysos.responder.audio.AlarmSoundPlayer
+import com.emergencysos.responder.data.FirebaseRepository
 import com.emergencysos.responder.data.PreferencesManager
-import com.emergencysos.responder.data.StatusChangeRequest
-import com.emergencysos.responder.data.api.ApiClient
 import com.emergencysos.responder.ui.IncidentAlertActivity
+import com.emergencysos.responder.ui.MainActivity
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 class EmergencyAlertForegroundService : Service() {
 
@@ -31,20 +33,27 @@ class EmergencyAlertForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
     private var currentIncidentId: String = ""
+    private var firestoreListener: ListenerRegistration? = null
+    private var isAlarmActive: Boolean = false
 
     // Auto-silence siren after 3 minutes to prevent battery exhaustion if phone unattended
     private val autoSilenceRunnable = Runnable {
         Log.w(TAG, "Safety timeout reached (3 mins). Silencing siren audio to preserve device battery.")
         AlarmSoundPlayer.stopAlarm()
         releaseWakeLock()
+        isAlarmActive = false
+        showMonitorNotification()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.action ?: ACTION_START_ALERT
+        val action = intent?.action ?: ACTION_START_MONITOR
 
         when (action) {
+            ACTION_START_MONITOR -> {
+                handleStartMonitor()
+            }
             ACTION_START_ALERT -> {
                 handleStartAlert(intent)
             }
@@ -57,14 +66,92 @@ class EmergencyAlertForegroundService : Service() {
             ACTION_DISMISS -> {
                 handleDismiss()
             }
+            ACTION_STOP_MONITOR -> {
+                handleStopMonitor()
+            }
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
+    }
+
+    /**
+     * Puts the service into standing monitor mode on the low-priority monitor channel.
+     * Attaches real-time Firestore listener to catch emergency alerts in background.
+     */
+    private fun handleStartMonitor() {
+        if (!isAlarmActive) {
+            showMonitorNotification()
+        }
+
+        if (firestoreListener == null) {
+            try {
+                val repo = FirebaseRepository.getInstance(applicationContext)
+                firestoreListener = repo.listenToIncidents(
+                    onUpdate = { allIncidents, newlyAdded ->
+                        if (newlyAdded != null && !alertedIncidentIds.contains(newlyAdded.id)) {
+                            alertedIncidentIds.add(newlyAdded.id)
+                            val locStr = listOf(
+                                newlyAdded.location?.building,
+                                newlyAdded.location?.floor,
+                                newlyAdded.location?.room
+                            ).filter { !it.isNullOrBlank() }.joinToString(" · ").ifEmpty { "Campus" }
+
+                            triggerIncidentAlert(
+                                incidentId = newlyAdded.id,
+                                category = newlyAdded.categoryId,
+                                priority = newlyAdded.priority,
+                                studentName = newlyAdded.studentName,
+                                studentId = newlyAdded.studentId,
+                                location = locStr,
+                                description = newlyAdded.description
+                            )
+                        }
+                    },
+                    onError = { e ->
+                        Log.w(TAG, "Background monitor Firestore listener notice: ${e.message}")
+                    }
+                )
+                Log.d(TAG, "Real-time Firestore listener attached in EmergencyAlertForegroundService")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed attaching Firestore listener in background service", e)
+            }
+        }
+    }
+
+    private fun showMonitorNotification() {
+        val dashboardIntent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            100,
+            dashboardIntent,
+            piFlags
+        )
+
+        val notification = NotificationCompat.Builder(this, EmergencySosApp.CHANNEL_MONITOR_ID)
+            .setSmallIcon(R.drawable.ic_stat_sos)
+            .setContentTitle("Campus Safety Network · Active Monitor")
+            .setContentText("Emergency responder online · Monitoring campus SOS alerts")
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setContentIntent(contentPendingIntent)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun handleStartAlert(intent: Intent?) {
         val incidentId = intent?.getStringExtra(EXTRA_INCIDENT_ID) ?: "SOS-ALERT"
-        currentIncidentId = incidentId
         val category = intent?.getStringExtra(EXTRA_CATEGORY) ?: "Emergency"
         val priority = intent?.getStringExtra(EXTRA_PRIORITY) ?: "CRITICAL"
         val studentName = intent?.getStringExtra(EXTRA_STUDENT_NAME) ?: "Student"
@@ -72,7 +159,22 @@ class EmergencyAlertForegroundService : Service() {
         val location = intent?.getStringExtra(EXTRA_LOCATION) ?: "Campus"
         val description = intent?.getStringExtra(EXTRA_DESCRIPTION) ?: ""
 
-        Log.d(TAG, "Starting EmergencyAlertForegroundService for $incidentId ($priority)")
+        triggerIncidentAlert(incidentId, category, priority, studentName, studentId, location, description)
+    }
+
+    private fun triggerIncidentAlert(
+        incidentId: String,
+        category: String,
+        priority: String,
+        studentName: String,
+        studentId: String,
+        location: String,
+        description: String
+    ) {
+        currentIncidentId = incidentId
+        isAlarmActive = true
+
+        Log.d(TAG, "Triggering emergency alarm for $incidentId ($priority) at $location")
 
         // 1. Acquire safe wake lock
         acquireWakeLock()
@@ -84,7 +186,16 @@ class EmergencyAlertForegroundService : Service() {
         handler.removeCallbacks(autoSilenceRunnable)
         handler.postDelayed(autoSilenceRunnable, MAX_ALARM_DURATION_MS)
 
-        // 3. Build FullScreenIntent & Notification Actions
+        // 3. Report delivery receipt to Firestore
+        serviceScope.launch {
+            try {
+                FirebaseRepository.getInstance(applicationContext).reportReceipt(incidentId)
+            } catch (e: Exception) {
+                Log.w(TAG, "Notice recording delivery receipt: ${e.message}")
+            }
+        }
+
+        // 4. Build FullScreenIntent & Notification Actions
         val alertIntent = Intent(applicationContext, IncidentAlertActivity::class.java).apply {
             this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("incident_id", incidentId)
@@ -157,6 +268,13 @@ class EmergencyAlertForegroundService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+
+        // Try direct launch if in background
+        try {
+            startActivity(alertIntent)
+        } catch (e: Exception) {
+            Log.d(TAG, "Direct activity launch notice (handled by full-screen intent): ${e.message}")
+        }
     }
 
     private fun handleStopAlarm() {
@@ -164,29 +282,15 @@ class EmergencyAlertForegroundService : Service() {
         handler.removeCallbacks(autoSilenceRunnable)
         AlarmSoundPlayer.stopAlarm()
         releaseWakeLock()
+        isAlarmActive = false
 
-        // Update notification to indicate silenced status
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val alertIntent = Intent(applicationContext, IncidentAlertActivity::class.java).apply {
-            this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("incident_id", currentIncidentId)
-        }
-        val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val prefs = PreferencesManager.getInstance(applicationContext)
+        if (prefs.isLoggedIn) {
+            showMonitorNotification()
         } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
         }
-        val fullScreenPendingIntent = PendingIntent.getActivity(applicationContext, currentIncidentId.hashCode(), alertIntent, piFlags)
-
-        val notification = NotificationCompat.Builder(this, EmergencySosApp.CHANNEL_EMERGENCY_ID)
-            .setSmallIcon(R.drawable.ic_stat_sos)
-            .setContentTitle("⚠️ SOS $currentIncidentId (Siren Silenced)")
-            .setContentText("Emergency is pending your response. Tap to open.")
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setOngoing(true)
-            .setContentIntent(fullScreenPendingIntent)
-            .build()
-        nm.notify(NOTIFICATION_ID, notification)
     }
 
     private fun handleAcknowledge() {
@@ -194,29 +298,56 @@ class EmergencyAlertForegroundService : Service() {
         handler.removeCallbacks(autoSilenceRunnable)
         AlarmSoundPlayer.stopAlarm()
         releaseWakeLock()
+        isAlarmActive = false
 
         val id = currentIncidentId
         if (id.isNotEmpty()) {
             serviceScope.launch {
                 try {
-                    val api = ApiClient.getInstance(applicationContext).getService()
-                    api.changeStatus(id, "accept", StatusChangeRequest())
-                    Log.d(TAG, "Successfully acknowledged incident $id to backend.")
+                    val firebaseRepo = FirebaseRepository.getInstance(applicationContext)
+                    firebaseRepo.acknowledgeIncident(id)
+                    Log.d(TAG, "Successfully acknowledged incident $id to Cloud Firestore.")
                 } catch (e: Exception) {
                     Log.w(TAG, "Notice sending accept status from service: ${e.message}")
                 }
             }
         }
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        val prefs = PreferencesManager.getInstance(applicationContext)
+        if (prefs.isLoggedIn) {
+            showMonitorNotification()
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun handleDismiss() {
-        Log.d(TAG, "Dismissing emergency alert foreground service.")
+        Log.d(TAG, "Dismissing emergency alert.")
         handler.removeCallbacks(autoSilenceRunnable)
         AlarmSoundPlayer.stopAlarm()
         releaseWakeLock()
+        isAlarmActive = false
+
+        val prefs = PreferencesManager.getInstance(applicationContext)
+        if (prefs.isLoggedIn) {
+            showMonitorNotification()
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun handleStopMonitor() {
+        Log.d(TAG, "Stopping emergency monitor service.")
+        handler.removeCallbacks(autoSilenceRunnable)
+        AlarmSoundPlayer.stopAlarm()
+        releaseWakeLock()
+        isAlarmActive = false
+
+        firestoreListener?.remove()
+        firestoreListener = null
+
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -253,12 +384,16 @@ class EmergencyAlertForegroundService : Service() {
         handler.removeCallbacks(autoSilenceRunnable)
         AlarmSoundPlayer.stopAlarm()
         releaseWakeLock()
+        firestoreListener?.remove()
+        firestoreListener = null
     }
 
     companion object {
         private const val TAG = "EmergencyAlertService"
         const val NOTIFICATION_ID = 9110
 
+        const val ACTION_START_MONITOR = "com.emergencysos.responder.ACTION_START_MONITOR"
+        const val ACTION_STOP_MONITOR = "com.emergencysos.responder.ACTION_STOP_MONITOR"
         const val ACTION_START_ALERT = "com.emergencysos.responder.ACTION_START_ALERT"
         const val ACTION_STOP_ALARM = "com.emergencysos.responder.ACTION_STOP_ALARM"
         const val ACTION_ACKNOWLEDGE = "com.emergencysos.responder.ACTION_ACKNOWLEDGE"
@@ -274,6 +409,27 @@ class EmergencyAlertForegroundService : Service() {
 
         private const val MAX_ALARM_DURATION_MS = 180_000L // 3 minutes
 
+        // Thread-safe set to prevent duplicate sirens for the same incident
+        val alertedIncidentIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        fun startMonitor(context: Context) {
+            val intent = Intent(context, EmergencyAlertForegroundService::class.java).apply {
+                this.action = ACTION_START_MONITOR
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stopMonitor(context: Context) {
+            val intent = Intent(context, EmergencyAlertForegroundService::class.java).apply {
+                this.action = ACTION_STOP_MONITOR
+            }
+            context.startService(intent)
+        }
+
         fun startEmergencyAlert(
             context: Context,
             incidentId: String,
@@ -284,6 +440,7 @@ class EmergencyAlertForegroundService : Service() {
             location: String,
             description: String
         ) {
+            alertedIncidentIds.add(incidentId)
             val intent = Intent(context, EmergencyAlertForegroundService::class.java).apply {
                 this.action = ACTION_START_ALERT
                 putExtra(EXTRA_INCIDENT_ID, incidentId)

@@ -58,6 +58,7 @@
                     android:id="@+id/tilServerUrl"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:visibility="gone"
                     android:hint="@string/server_url_hint"
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
@@ -66,7 +67,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:inputType="textUri"
-                        android:text="http://10.0.2.2:4000"
+                        android:text="https://college-sos-app-26aec.web.app"
                         android:textColor="@color/text_primary" />
                 </com.google.android.material.textfield.TextInputLayout>
 

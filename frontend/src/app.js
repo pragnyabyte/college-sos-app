@@ -1,9 +1,17 @@
 import {
   setupResponderFCM,
-  syncResponderDeviceWithBackend,
+  registerResponderDeviceFirestore,
   getDeviceId,
-  syncIncidentToFirestore,
+  registerStudentWithFirebase,
+  verifyStudentWithFirebase,
+  verifyResponderWithFirebase,
+  createIncidentInFirestore,
+  fetchIncidentsFromFirestore,
+  fetchIncidentFromFirestore,
+  updateIncidentStatusInFirestore,
+  updateIncidentLocationInFirestore,
   deleteIncidentFromFirestore,
+  syncIncidentToFirestore,
   listenToFirestoreIncidents
 } from './firebase-client.js';
 import {
@@ -15,12 +23,17 @@ import {
 } from './audio.js';
 
 // Centralized API Base URL configuration:
-// In production, reads VITE_API_URL if configured (e.g. deployed Railway backend URL).
-// In development, or if VITE_API_URL is unset, defaults to empty string so requests are routed
-// through Vite dev server's proxy (to local backend) on localhost or mobile phone on Wi-Fi.
+// Defaults to empty string so Firebase native client services (Firestore, Auth, FCM) are used.
 const RAW_API_URL = (import.meta.env?.VITE_API_URL || '').trim().replace(/\/+$/, '');
 
 export function getApiBaseUrl() {
+  if (typeof window !== 'undefined' && window.__SOS_BACKEND_URL__) {
+    return String(window.__SOS_BACKEND_URL__).trim().replace(/\/+$/, '');
+  }
+  try {
+    const saved = localStorage.getItem('sos_backend_url');
+    if (saved && saved.trim()) return saved.trim().replace(/\/+$/, '');
+  } catch {}
   return RAW_API_URL;
 }
 
@@ -31,9 +44,10 @@ export function buildApiUrl(path) {
 }
 
 export function getWebSocketUrl() {
-  if (RAW_API_URL) {
-    const wsScheme = RAW_API_URL.startsWith('https') ? 'wss' : 'ws';
-    const wsHost = RAW_API_URL.replace(/^https?:\/\//, '');
+  const base = getApiBaseUrl();
+  if (base) {
+    const wsScheme = base.startsWith('https') ? 'wss' : 'ws';
+    const wsHost = base.replace(/^https?:\/\//, '');
     return `${wsScheme}://${wsHost}/ws`;
   }
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -496,9 +510,9 @@ async function initResponderPush() {
         state.deviceToken = token;
         safeStorage.set('sos-fcm-token', token);
         state.deviceStatus = 'active';
-        if (state.token) {
-          await syncResponderDeviceWithBackend(token, state.token);
-          console.log(`[FCM] Token synchronized with responder identity ${state.user?.id || ''}`);
+        if (state.user) {
+          await registerResponderDeviceFirestore(token, state.user.id);
+          console.log(`[FCM] Token stored in Cloud Firestore for responder identity ${state.user?.id || ''}`);
         }
         render();
       },
@@ -536,14 +550,64 @@ async function initResponderPush() {
 }
 
 async function api(path, options = {}) {
-  try {
-    const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
-    if (isStaticHost && !RAW_API_URL) {
-      const err = new Error('Backend server is unavailable. Please try again.');
-      err.isNetworkError = true;
-      throw err;
+  const method = (options.method || 'GET').toUpperCase();
+
+  if (path === '/api/categories') {
+    return defaultCategories;
+  }
+
+  if (path === '/api/sos/stats') {
+    return {
+      active: state.incidents.filter(i => !['RESOLVED', 'CANCELLED'].includes(i.status)).length,
+      critical: state.incidents.filter(i => i.priority === 'CRITICAL').length,
+      responding: state.incidents.filter(i => i.status === 'RESPONDING').length,
+      resolvedToday: state.incidents.filter(i => i.status === 'RESOLVED').length,
+      averageAcceptSeconds: 42
+    };
+  }
+
+  if (path === '/api/sos/my' || path === '/api/sos/admin') {
+    return await fetchIncidentsFromFirestore(state.user);
+  }
+
+  if (path === '/api/sos' && method === 'POST') {
+    const payload = options.body ? JSON.parse(options.body) : {};
+    return await createIncidentInFirestore(payload, state.user);
+  }
+
+  if (path.startsWith('/api/sos/')) {
+    const parts = path.split('/');
+    const incId = parts[3];
+    const subAction = parts[4];
+
+    if (method === 'DELETE') {
+      await deleteIncidentFromFirestore(incId);
+      return { success: true, id: incId };
     }
 
+    if (method === 'PATCH' && subAction === 'location') {
+      const locPayload = options.body ? JSON.parse(options.body) : {};
+      return await updateIncidentLocationInFirestore(incId, locPayload, state.user);
+    }
+
+    if (method === 'POST' && ['accept', 'respond', 'arrive', 'resolve', 'cancel'].includes(subAction)) {
+      const transPayload = options.body ? JSON.parse(options.body) : {};
+      const statusMap = { accept: 'ACCEPTED', respond: 'RESPONDING', arrive: 'ARRIVED', resolve: 'RESOLVED', cancel: 'CANCELLED' };
+      return await updateIncidentStatusInFirestore(incId, statusMap[subAction], transPayload, state.user);
+    }
+
+    if (method === 'GET' && !subAction) {
+      const inc = await fetchIncidentFromFirestore(incId);
+      if (inc) return inc;
+      const found = state.incidents.find(x => x.id === incId || (x._id && x._id === incId));
+      if (found) return found;
+      return null;
+    }
+  }
+
+  // Fallback if external API URL is explicitly configured
+  const apiBase = getApiBaseUrl();
+  if (apiBase) {
     const fullUrl = buildApiUrl(path);
     const r = await fetch(fullUrl, {
       ...options,
@@ -553,55 +617,24 @@ async function api(path, options = {}) {
         ...options.headers
       }
     });
-    const ct = r.headers.get('content-type') || '';
-    if (ct.includes('text/html') || r.status >= 500) {
-      const err = new Error('Backend server is unavailable. Please try again.');
-      err.isNetworkError = true;
-      throw err;
-    }
-    let data;
-    try {
-      data = await r.json();
-    } catch {
-      const err = new Error('Backend server is unavailable. Please try again.');
-      err.isNetworkError = true;
-      throw err;
-    }
-    if (!r.ok) {
-      const err = new Error(data.error || 'Request failed');
-      err.field = data.field;
-      throw err;
-    }
-    return data;
-  } catch (e) {
-    if (options.method && options.method.toUpperCase() !== 'GET') {
-      throw e;
-    }
-    if (path === '/api/categories') return defaultCategories;
-    if (path === '/api/sos/stats') return { active: state.incidents.length, critical: 1, responding: 1, resolvedToday: 2, averageAcceptSeconds: 42 };
-    if (path.startsWith('/api/sos/my') || path.startsWith('/api/sos/admin')) return state.incidents.length ? state.incidents : [];
-    if (path.startsWith('/api/sos/')) {
-      const id = path.split('/')[3];
-      const found = state.incidents.find(x => x.id === id || (x._id && x._id === id));
-      if (found) return found;
-    }
-    throw e;
+    return await r.json();
   }
+
+  return {};
 }
 
 async function refresh() {
   if (!state.user) return;
   try {
-    const isResp = isResponderUser(state.user);
-    const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user.role).toUpperCase());
-    const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my');
+    const incs = await fetchIncidentsFromFirestore(state.user);
     if (Array.isArray(incs)) {
       state.incidents = filterDeletedIncidents(incs);
       state.isOnline = true;
       state.lastSyncTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
   } catch (e) {
-    if (e.isNetworkError || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    console.warn('[SOS:Firestore] Refresh notice:', e.message);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
       state.isOnline = false;
     }
   }
@@ -930,24 +963,14 @@ async function handleRegister(formEl) {
   }
 
   try {
-    const res = await fetch(buildApiUrl('/api/auth/register'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name, regdNo })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const err = new Error(data.error || 'Registration failed.');
-      err.status = res.status;
-      throw err;
-    }
+    const res = await registerStudentWithFirebase({ name, regdNo });
 
     // Success: Redirect to sign-in page, prefill registration ID and name, show success message
     studentAuthMode = 'signin';
     savedRegdForSignIn = regdNo;
     savedNameForSignIn = name;
     login();
-    showLoginSuccess('Registration successful! You can now sign in.');
+    showLoginSuccess(res.message || 'Registration successful! You can now sign in.');
     const newRegd = document.querySelector('#regdNo');
     if (newRegd) {
       newRegd.value = regdNo;
@@ -957,7 +980,17 @@ async function handleRegister(formEl) {
       studentNameInput.value = name;
     }
   } catch (err) {
-    showLoginError(err.message || 'Registration failed.');
+    console.error('[SOS:Firebase] Student registration error:', err);
+    let msg = err.message || 'Registration failed.';
+    if (err.status === 409 || msg.includes('already registered')) {
+      msg = 'This registration ID is already registered. Please sign in.';
+    } else if (err.code === 'permission-denied') {
+      msg = 'Access denied by Firestore security rules.';
+    } else if (err.code === 'unavailable' || err.name === 'TypeError') {
+      msg = 'Connection to Firebase unavailable. Please check your internet connection.';
+    }
+
+    showLoginError(msg);
     if (submitBtn) {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Register →';
@@ -1732,81 +1765,46 @@ async function handleLogin(formEl) {
 
   try {
     console.log(`[SOS:Auth] Logging in as ${regdNo} with role: ${role}`);
-    const loginPayload = isResp
-      ? { regdNo, role, pin, name }
-      : { regdNo, role, name };
-
-    const res = await fetch(buildApiUrl('/api/auth/login'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(loginPayload)
-    });
-
-    const ct = res.headers.get('content-type') || '';
-    if (ct.includes('text/html') || res.status >= 500) {
-      const netErr = new Error('Backend server is unavailable. Please try again.');
-      netErr.isNetworkError = true;
-      throw netErr;
+    let authRes;
+    if (isResp) {
+      authRes = await verifyResponderWithFirebase(regdNo, pin, name);
+    } else {
+      authRes = await verifyStudentWithFirebase(regdNo, name);
     }
 
-    let data;
-    try {
-      data = await res.json();
-    } catch {
-      const netErr = new Error('Backend server is unavailable. Please try again.');
-      netErr.isNetworkError = true;
-      throw netErr;
-    }
-
-    if (!res.ok) {
-      const err = new Error(data.error || 'Authentication failed');
-      err.status = res.status;
-      err.field = data.field;
-      throw err;
-    }
-
-    const d = data;
-    state.user = d.user;
-    state.token = d.token;
+    state.user = authRes.user;
+    state.token = authRes.token;
     state.error = '';
     state.selected = null;
     state.view = 'home';
-    safeStorage.set('sos-user', JSON.stringify(d.user));
-    safeStorage.set('sos-token', d.token);
+    safeStorage.set('sos-user', JSON.stringify(authRes.user));
+    safeStorage.set('sos-token', authRes.token);
 
-    console.log(`%c[SOS:Auth] Successfully signed in! Role: ${d.user.role}, Name: ${d.user.name}`, 'color:#10b981;font-weight:bold');
+    console.log(`%c[SOS:Auth] Successfully signed in! Role: ${authRes.user.role}, Name: ${authRes.user.name}`, 'color:#10b981;font-weight:bold');
 
-    if (isResponderUser(d.user)) {
+    if (isResponderUser(authRes.user)) {
       initAudio();
       initResponderPush();
       attachFirestoreListener();
       checkIncidentQueryParam();
     }
 
-    try { connectSocket(); } catch {}
-    try { connectSseStream(); } catch {}
     try { await refresh(); } catch {}
     render();
   } catch (err) {
     console.error('[SOS:Auth] Authentication error:', err.message);
-    const isNetwork = err.isNetworkError ||
-      err.name === 'TypeError' ||
-      String(err.message || '').includes('fetch') ||
-      String(err.message || '').includes('Network') ||
-      String(err.message || '').includes('unavailable') ||
-      String(err.message || '').includes('offline') ||
-      String(err.message || '').includes('JSON') ||
-      String(err.message || '').includes('<!doctype');
-
-    const msg = isNetwork
-      ? 'Backend server is unavailable. Please try again.'
-      : (err.message || 'Authentication failed');
+    let msg = err.message || 'Authentication failed';
+    if (err.code === 'permission-denied') {
+      msg = 'Access denied by Firestore security rules.';
+    } else if (err.code === 'unavailable' || err.name === 'TypeError') {
+      msg = 'Firebase service is currently unreachable. Please check your internet connection.';
+    }
 
     showLoginError(msg);
 
     // Keep registration ID and PIN intact during temporary network errors.
-    // If credentials are incorrect from backend, clear only the incorrect fields.
-    if (isResp && !isNetwork) {
+    // If credentials are incorrect, clear only the incorrect fields.
+    if (isResp) {
       if (err.field === 'registration_number' || msg.toLowerCase().includes('registration') || msg.toLowerCase().includes('regd')) {
         if (regdInput) {
           regdInput.value = '';
@@ -1818,11 +1816,15 @@ async function handleLogin(formEl) {
           pinInput.focus();
         }
       }
-    } else if (!isResp && !isNetwork) {
+    } else {
       if (err.field === 'name' || msg.toLowerCase().includes('name')) {
         if (nameInput) {
           nameInput.value = '';
           nameInput.focus();
+        }
+      } else if (err.field === 'registration_number' || msg.toLowerCase().includes('registration') || msg.toLowerCase().includes('regd')) {
+        if (regdInput) {
+          regdInput.focus();
         }
       }
     }
@@ -2038,16 +2040,16 @@ async function executeSosSubmission({ categoryId, description = '', building = '
       return;
     }
 
-    // 4. Submit to /api/sos
+    // 4. Submit directly to Cloud Firestore
     let created;
     try {
-      console.log('[SOS:Student] 2. Submitting SOS payload to /api/sos...');
-      created = await api('/api/sos', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
+      console.log('[SOS:Student] 2. Submitting SOS payload to Cloud Firestore...');
+      created = await createIncidentInFirestore(payload, state.user);
     } catch (apiErr) {
-      console.warn('[SOS:Student] Backend request failed (offline/unreachable):', apiErr.message);
+      console.warn('[SOS:Student] Firestore write failed:', apiErr.message);
+      if (apiErr.status === 400 || apiErr.field) {
+        throw apiErr;
+      }
       const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
       addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
       const pendingInc = {
@@ -2073,16 +2075,12 @@ async function executeSosSubmission({ categoryId, description = '', building = '
       return;
     }
 
-    console.log(`%c[SOS:Student] 3. SOS created successfully! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
+    console.log(`%c[SOS:Student] 3. SOS created successfully in Firestore! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
 
     // Update button text to success state
     if (submitBtnEl) {
       submitBtnEl.innerHTML = '✓ SOS sent successfully.';
     }
-
-    // Sync to Firebase Cloud Firestore
-    console.log('[SOS:Student] 4. Syncing emergency document to Cloud Firestore...');
-    syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
 
     // Instant broadcast across tabs on localhost
     if (sosBroadcast) {
@@ -2249,15 +2247,12 @@ async function handleInstantOneClickSos(btnEl) {
       return;
     }
 
-    // 5. Submit to existing /api/sos endpoint
+    // 5. Submit directly to Cloud Firestore
     let created;
     try {
-      created = await api('/api/sos', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
+      created = await createIncidentInFirestore(payload, state.user);
     } catch (apiErr) {
-      console.warn('[SOS:Instant] Backend request failed:', apiErr.message);
+      console.warn('[SOS:Instant] Firestore request failed:', apiErr.message);
       state.error = apiErr.message || 'Failed to submit SOS. Please try again.';
       if (btnEl) {
         btnEl.disabled = false;
@@ -2267,15 +2262,12 @@ async function handleInstantOneClickSos(btnEl) {
       return;
     }
 
-    console.log('[SOS:Instant] SOS created successfully! ID:', created.id);
+    console.log('[SOS:Instant] SOS created successfully in Firestore! ID:', created.id);
 
     // 6. Update UI and notifications
     if (btnEl) {
       btnEl.innerHTML = '✓ SOS sent successfully.';
     }
-
-    // Mirror to Cloud Firestore
-    syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
 
     // Instant broadcast across open tabs
     if (sosBroadcast) {
@@ -2488,52 +2480,29 @@ document.addEventListener('click', async (e) => {
 
     if (!deleteKey) return;
 
-    // Execute backend deletion asynchronously without freezing the UI or blocking next deletes
+    // Execute Cloud Firestore deletion asynchronously without freezing the UI or blocking next deletes
     (async () => {
       try {
-        console.log(`%c[SOS:Delete] Permanently deleting SOS alert from database: _id=${mongoId || 'n/a'}, id=${incId}`, 'color:#dc2626;font-weight:bold');
-        
-        // Single DELETE request using unique MongoDB document _id
-        await api(`/api/sos/${encodeURIComponent(deleteKey)}`, { method: 'DELETE' });
-        console.log('[SOS:Delete] Successfully deleted from MongoDB Atlas: SOS alert deleted successfully.');
-
-        // Delete from Firestore in background
-        try {
-          if (incId) deleteIncidentFromFirestore(incId).catch(() => {});
-          if (mongoId && mongoId !== incId) deleteIncidentFromFirestore(mongoId).catch(() => {});
-        } catch {}
+        console.log(`%c[SOS:Delete] Permanently deleting SOS alert from Cloud Firestore: id=${incId}`, 'color:#dc2626;font-weight:bold');
+        if (incId) await deleteIncidentFromFirestore(incId);
+        if (mongoId && mongoId !== incId) await deleteIncidentFromFirestore(mongoId);
+        console.log('[SOS:Delete] Successfully deleted from Cloud Firestore.');
 
         // Broadcast to other open tabs
         if (sosBroadcast) {
           sosBroadcast.postMessage({ event: 'sos.deleted', id: incId, _id: mongoId });
         }
 
-        // Background sync from MongoDB Atlas without disrupting active UI or active delete prompt
-        const isResp = isResponderUser(state.user);
-        const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user?.role).toUpperCase());
-        const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my').catch(() => null);
-        if (Array.isArray(incs)) {
-          state.incidents = filterDeletedIncidents(incs);
-          if (!state.deletePrompt) {
-            render();
-          }
-        }
+        // Background sync from Firestore
+        await refresh();
       } catch (err) {
-        console.error('[SOS:Delete] MongoDB deletion failed for ' + deleteKey + ':', err);
-        // If deletion failed: refetch from database so incident remains visible, log technical error
+        console.error('[SOS:Delete] Firestore deletion failed for ' + deleteKey + ':', err);
         if (incId) locallyDeletedIds.delete(incId);
         if (mongoId) locallyDeletedIds.delete(mongoId);
         try {
           sessionStorage.setItem('sos_deleted_ids', JSON.stringify([...locallyDeletedIds]));
         } catch {}
-
-        const isResp = isResponderUser(state.user);
-        const isAdminUser = ['INSTITUTE_ADMIN', 'ADMIN', 'SUPER_ADMIN'].includes(String(state.user?.role).toUpperCase());
-        const incs = await api(isResp || isAdminUser ? '/api/sos/admin' : '/api/sos/my').catch(() => null);
-        if (Array.isArray(incs)) {
-          state.incidents = filterDeletedIncidents(incs);
-          render();
-        }
+        await refresh();
       }
     })();
     return;
@@ -2840,31 +2809,17 @@ app.addEventListener('input', (e) => {
   }
 });
 
-// Initialize categories and app state
-const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
-const catFetchPromise = (!isStaticHost || RAW_API_URL)
-  ? fetch(buildApiUrl('/api/categories')).then(r => {
-      const ct = r.headers.get('content-type') || '';
-      if (ct.includes('text/html') || !r.ok) throw new Error('Offline');
-      return r.json();
-    })
-  : Promise.reject(new Error('Static host without backend'));
+// Initialize categories and app state with Firebase
+state.categories = defaultCategories;
 
-catFetchPromise.then(async (c) => {
-  state.categories = Array.isArray(c) && c.length ? c : defaultCategories;
-  if (state.user) await refresh();
-  else render();
-}).catch(() => {
-  state.categories = defaultCategories;
-  if (state.user) refresh();
-  else render();
-});
-
-if (state.token) {
-  connectSocket();
-  connectSseStream();
+if (state.user) {
+  refresh().catch(() => {});
+} else {
+  render();
 }
+
 if (isResponderUser(state.user)) {
+  initAudio();
   initResponderPush();
   attachFirestoreListener();
   checkIncidentQueryParam();

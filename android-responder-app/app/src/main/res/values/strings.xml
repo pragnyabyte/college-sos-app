@@ -11,6 +11,8 @@
     <!-- Channels -->
     <string name="channel_emergency_sos_name">Urgent Emergency SOS Alerts</string>
     <string name="channel_emergency_sos_desc">High-priority critical sirens and lockscreen alerts for emergency responses</string>
+    <string name="channel_monitor_name">Campus Emergency Monitor</string>
+    <string name="channel_monitor_desc">Persistent background monitor status ensuring rapid emergency reception</string>
 
     <!-- Onboarding -->
     <string name="onboarding_title">Critical Alert Permissions</string>

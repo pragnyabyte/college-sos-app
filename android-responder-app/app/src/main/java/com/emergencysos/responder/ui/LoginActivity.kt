@@ -73,45 +73,38 @@ class LoginActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                val api = ApiClient.getInstance(this@LoginActivity).getService()
-                val loginRes = withContext(Dispatchers.IO) {
-                    api.login(LoginRequest(regdNo = responderId, pin = pin, role = "RESPONDER"))
+                val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@LoginActivity)
+                val loginResult = withContext(Dispatchers.IO) {
+                    firebaseRepo.loginResponder(responderId, pin)
                 }
 
-                if (!loginRes.isSuccessful || loginRes.body() == null) {
-                    val errBody = loginRes.errorBody()?.string() ?: ""
-                    val msg = if (errBody.contains("Invalid")) "Invalid Responder ID or PIN" else "Authentication failed (${loginRes.code()})"
+                if (loginResult.isFailure) {
+                    val err = loginResult.exceptionOrNull()
+                    val msg = err?.message ?: "Authentication failed"
                     showError(msg)
                     return@launch
                 }
 
-                val body = loginRes.body()!!
-                prefs.authToken = body.token
-                prefs.responderId = body.user.id
-                prefs.responderName = body.user.name
+                val user = loginResult.getOrThrow()
+                prefs.authToken = "sos-firebase-token-${user.id}-${System.currentTimeMillis()}"
+                prefs.responderId = user.id
+                prefs.responderName = user.name
 
-                // 2. Retrieve FCM Token and Register Device independently in MongoDB
+                // Retrieve FCM Token and Register Device in Cloud Firestore
                 try {
                     val token = FirebaseMessaging.getInstance().token.await()
                     prefs.fcmToken = token
-
                     withContext(Dispatchers.IO) {
-                        api.registerDevice(
-                            DeviceRegisterRequest(
-                                deviceId = prefs.deviceId,
-                                installationId = prefs.deviceId,
-                                fcmToken = token,
-                                platform = "android",
-                                appVersion = "1.0.0",
-                                model = "${Build.MANUFACTURER} ${Build.MODEL}"
-                            )
-                        )
+                        firebaseRepo.registerDeviceToken(token, user.id)
                     }
                 } catch (fcmErr: Exception) {
                     // Non-fatal if offline or play services initializing
                 }
 
-                Toast.makeText(this@LoginActivity, "Welcome, ${body.user.name}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@LoginActivity, "Welcome, ${user.name}", Toast.LENGTH_SHORT).show()
+
+                // Start persistent background emergency monitor
+                com.emergencysos.responder.service.EmergencyAlertForegroundService.startMonitor(this@LoginActivity)
 
                 if (!prefs.onboardingCompleted) {
                     startActivity(Intent(this@LoginActivity, OnboardingActivity::class.java))
@@ -121,7 +114,7 @@ class LoginActivity : AppCompatActivity() {
                 finish()
 
             } catch (e: Exception) {
-                showError("Cannot connect to server. Check URL and network connection: ${e.message}")
+                showError("Login failed: ${e.message}")
             } finally {
                 binding.progressBar.visibility = View.GONE
                 binding.btnLogin.isEnabled = true

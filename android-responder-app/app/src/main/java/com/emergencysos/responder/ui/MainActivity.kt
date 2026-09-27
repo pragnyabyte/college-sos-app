@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         setupUI()
+        EmergencyAlertForegroundService.startMonitor(this)
         registerNetworkMonitoring()
         loadIncidents()
         sendDevicePing()
@@ -60,12 +61,44 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        startFirestoreListener()
         loadIncidents()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        firestoreListener?.remove()
+        firestoreListener = null
         unregisterNetworkMonitoring()
+    }
+
+    private fun startFirestoreListener() {
+        if (firestoreListener != null) return
+        try {
+            val repo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this)
+            firestoreListener = repo.listenToIncidents(
+                onUpdate = { allIncidents, newlyAdded ->
+                    val activeList = allIncidents.filter { it.status != "RESOLVED" && it.status != "CANCELLED" }
+                    adapter.submitList(activeList)
+                    binding.tvEmpty.visibility = if (activeList.isEmpty()) View.VISIBLE else View.GONE
+
+                    if (newlyAdded != null && !alertedIncidentIds.contains(newlyAdded.id)) {
+                        alertedIncidentIds.add(newlyAdded.id)
+                        val locStr = "${newlyAdded.location?.building ?: ""} · ${newlyAdded.location?.floor ?: ""} · ${newlyAdded.location?.room ?: ""}".trim()
+                        EmergencyAlertForegroundService.startEmergencyAlert(
+                            context = this@MainActivity,
+                            incidentId = newlyAdded.id,
+                            category = newlyAdded.categoryId,
+                            priority = newlyAdded.priority,
+                            studentName = newlyAdded.studentName,
+                            studentId = newlyAdded.studentId,
+                            location = locStr.ifEmpty { "Campus" },
+                            description = newlyAdded.description
+                        )
+                    }
+                }
+            )
+        } catch (_: Exception) {}
     }
 
     private fun registerNetworkMonitoring() {
@@ -148,36 +181,37 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var firestoreListener: com.google.firebase.firestore.ListenerRegistration? = null
+
     private fun loadIncidents() {
         binding.swipeRefresh.isRefreshing = true
 
         lifecycleScope.launch {
             try {
-                val api = ApiClient.getInstance(this@MainActivity).getService()
-                val response = withContext(Dispatchers.IO) {
-                    api.getIncidents()
+                val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
+                val result = withContext(Dispatchers.IO) {
+                    firebaseRepo.getIncidents()
                 }
 
                 val nowTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
-                if (response.isSuccessful && response.body() != null) {
-                    val list = response.body()!!
+                if (result.isSuccess) {
+                    val list = result.getOrNull() ?: emptyList()
                     val activeList = list.filter { it.status != "RESOLVED" && it.status != "CANCELLED" }
                     adapter.submitList(activeList)
 
-                    binding.tvConnectivityStatus.text = "🟢 Online · Synced"
+                    binding.tvConnectivityStatus.text = "🟢 Online · Synced with Firebase"
                     binding.tvConnectivityStatus.setTextColor(0xFF34D399.toInt())
                     binding.tvLastSyncTime.text = "Last sync: $nowTime"
                     binding.tvEmpty.visibility = if (activeList.isEmpty()) View.VISIBLE else View.GONE
 
-                    // Phase 4: Recover overdue / unacknowledged incidents missed during offline periods
+                    // Check for overdue / unacknowledged incidents
                     val unacknowledged = activeList.filter { it.status == "DEPARTMENT_NOTIFIED" || it.status == "SOS_SENT" }
                     if (unacknowledged.isNotEmpty()) {
                         binding.bannerOverdueAlert.visibility = View.VISIBLE
                         binding.tvOverdueAlertText.text = "⚠️ ${unacknowledged.size} OVERDUE EMERGENCY AWAITING RESPONSE"
                         binding.tvOverdueAlertSubtext.text = "Incident ${unacknowledged.first().id} at ${unacknowledged.first().location?.building ?: "Campus"} (Reported: ${unacknowledged.first().createdAt ?: "Recently"})"
 
-                        // Deduplicated alarm: only trigger full alert if not already alerted on this phone
                         for (inc in unacknowledged) {
                             if (!alertedIncidentIds.contains(inc.id)) {
                                 alertedIncidentIds.add(inc.id)
@@ -192,16 +226,17 @@ class MainActivity : AppCompatActivity() {
                                     location = locStr.ifEmpty { "Campus" },
                                     description = inc.description
                                 )
-                                break // Alarm for the foremost unacknowledged incident
+                                break
                             }
                         }
                     } else {
                         binding.bannerOverdueAlert.visibility = View.GONE
                     }
                 } else {
-                    binding.tvConnectivityStatus.text = "⚠️ Server notice: HTTP ${response.code()}"
+                    val err = result.exceptionOrNull()
+                    binding.tvConnectivityStatus.text = "⚠️ Sync notice"
                     binding.tvConnectivityStatus.setTextColor(0xFFFBBF24.toInt())
-                    Toast.makeText(this@MainActivity, "Could not sync incidents: ${response.code()}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Firestore: ${err?.message}", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 binding.tvConnectivityStatus.text = "🔴 Offline · Network unavailable"
@@ -217,16 +252,25 @@ class MainActivity : AppCompatActivity() {
     private fun handleIncidentAction(incident: Incident, action: String) {
         lifecycleScope.launch {
             try {
-                val api = ApiClient.getInstance(this@MainActivity).getService()
-                val res = withContext(Dispatchers.IO) {
-                    api.changeStatus(incident.id, action, StatusChangeRequest())
+                val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
+                val targetStatus = when (action.lowercase()) {
+                    "accept" -> "ACCEPTED"
+                    "respond" -> "RESPONDING"
+                    "arrive" -> "ARRIVED"
+                    "resolve" -> "RESOLVED"
+                    "cancel" -> "CANCELLED"
+                    else -> action.uppercase()
                 }
 
-                if (res.isSuccessful) {
-                    Toast.makeText(this@MainActivity, "Incident ${incident.id} marked $action", Toast.LENGTH_SHORT).show()
+                val res = withContext(Dispatchers.IO) {
+                    firebaseRepo.changeIncidentStatus(incident.id, targetStatus)
+                }
+
+                if (res.isSuccess) {
+                    Toast.makeText(this@MainActivity, "Incident ${incident.id} marked $targetStatus", Toast.LENGTH_SHORT).show()
                     loadIncidents()
                 } else {
-                    Toast.makeText(this@MainActivity, "Status update failed: ${res.code()}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Status update failed", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "Error updating status: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -253,16 +297,17 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                val api = ApiClient.getInstance(this@MainActivity).getService()
+                val repo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
                 val res = withContext(Dispatchers.IO) {
-                    api.triggerTestAlert()
+                    repo.createTestDrillIncident()
                 }
 
-                if (res.isSuccessful) {
-                    Toast.makeText(this@MainActivity, "⚡ Test Drill dispatched to all registered responder phones!", Toast.LENGTH_LONG).show()
+                if (res.isSuccess) {
+                    val drillId = res.getOrNull()
+                    Toast.makeText(this@MainActivity, "⚡ Test Drill ($drillId) dispatched to all registered responder phones!", Toast.LENGTH_LONG).show()
                     loadIncidents()
                 } else {
-                    Toast.makeText(this@MainActivity, "Test drill failed: ${res.code()}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Test drill failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 Toast.makeText(this@MainActivity, "Test drill error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -276,8 +321,8 @@ class MainActivity : AppCompatActivity() {
     private fun sendDevicePing() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val api = ApiClient.getInstance(this@MainActivity).getService()
-                api.pingDevice(DevicePingRequest(prefs.deviceId))
+                val repo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
+                repo.pingDevice()
             } catch (_: Exception) {}
         }
     }
@@ -296,10 +341,10 @@ class MainActivity : AppCompatActivity() {
     private fun performLogout() {
         lifecycleScope.launch {
             try {
-                val api = ApiClient.getInstance(this@MainActivity).getService()
+                EmergencyAlertForegroundService.stopMonitor(this@MainActivity)
                 withContext(Dispatchers.IO) {
-                    // Deactivate ONLY this phone's device registration in MongoDB Atlas
-                    api.unregisterDevice(prefs.deviceId)
+                    com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
+                        .registerDeviceToken("", prefs.responderId)
                 }
             } catch (_: Exception) {}
 

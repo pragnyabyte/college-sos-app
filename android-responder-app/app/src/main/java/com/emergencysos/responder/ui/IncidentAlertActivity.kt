@@ -80,14 +80,8 @@ class IncidentAlertActivity : AppCompatActivity() {
     private fun reportOpenReceipt() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val api = ApiClient.getInstance(this@IncidentAlertActivity).getService()
-                api.reportOpen(
-                    id = incidentId,
-                    req = AuditReceiptRequest(
-                        deviceId = prefs.deviceId,
-                        clientTimestamp = System.currentTimeMillis().toString()
-                    )
-                )
+                val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@IncidentAlertActivity)
+                firebaseRepo.reportOpen(incidentId)
             } catch (_: Exception) {}
         }
     }
@@ -101,17 +95,17 @@ class IncidentAlertActivity : AppCompatActivity() {
 
             lifecycleScope.launch {
                 try {
-                    val api = ApiClient.getInstance(this@IncidentAlertActivity).getService()
+                    val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@IncidentAlertActivity)
                     val res = withContext(Dispatchers.IO) {
-                        api.changeStatus(incidentId, "accept")
+                        firebaseRepo.acknowledgeIncident(incidentId)
                     }
-                    if (res.isSuccessful) {
+                    if (res.isSuccess) {
                         Toast.makeText(this@IncidentAlertActivity, "SOS $incidentId Acknowledged! Team responding.", Toast.LENGTH_LONG).show()
                     } else {
                         Toast.makeText(this@IncidentAlertActivity, "Status updated locally.", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
-                    Toast.makeText(this@IncidentAlertActivity, "Network notice: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@IncidentAlertActivity, "Notice: ${e.message}", Toast.LENGTH_SHORT).show()
                 } finally {
                     openDashboard()
                 }

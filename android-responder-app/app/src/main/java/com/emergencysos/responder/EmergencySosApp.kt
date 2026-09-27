@@ -48,11 +48,25 @@ class EmergencySosApp : Application() {
 
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
-            Log.d("EmergencySosApp", "Emergency SOS notification channel initialized with IMPORTANCE_HIGH and USAGE_ALARM sound.")
+
+            // 2. Persistent Background Monitor Notification Channel (Low Importance, Silent)
+            val monitorChannel = NotificationChannel(
+                CHANNEL_MONITOR_ID,
+                getString(R.string.channel_monitor_name),
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = getString(R.string.channel_monitor_desc)
+                setShowBadge(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+            notificationManager.createNotificationChannel(monitorChannel)
+
+            Log.d("EmergencySosApp", "Emergency SOS and Monitor notification channels initialized.")
         }
     }
 
     companion object {
         const val CHANNEL_EMERGENCY_ID = "emergency_sos_channel"
+        const val CHANNEL_MONITOR_ID = "emergency_sos_monitor_channel"
     }
 }
