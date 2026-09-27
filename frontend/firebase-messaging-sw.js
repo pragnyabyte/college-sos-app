@@ -79,6 +79,7 @@ self.addEventListener('push', (event) => {
     const { title, options } = formatEmergencyNotification(raw);
     event.waitUntil(self.registration.showNotification(title, options));
   } catch (e) {
+    // If not JSON, show text
     event.waitUntil(
       self.registration.showNotification('🚨 College SOS Alert', {
         body: event.data.text(),
@@ -99,6 +100,7 @@ self.addEventListener('notificationclick', (event) => {
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // If a responder tab is already open, focus it and notify it
       for (const client of windowClients) {
         if (client.url.includes('/responder') && 'focus' in client) {
           if (targetSosId) {
@@ -107,6 +109,7 @@ self.addEventListener('notificationclick', (event) => {
           return client.focus();
         }
       }
+      // If no responder tab is open, open a new window
       if (clients.openWindow) {
         return clients.openWindow(urlToOpen);
       }
