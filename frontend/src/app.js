@@ -730,7 +730,12 @@ function connectSocket() {
   } catch {}
 }
 
-function category(id) { return state.categories.find(c => c.id === id); }
+function category(id) {
+  if (id === 'general' || id === 'General Emergency') {
+    return { id: 'general', name: 'General Emergency', icon: '🚨', priority: 'HIGH', primaryDepartmentId: 'DEPT_SECURITY', departmentIds: ['DEPT_SECURITY', 'DEPT_ADMIN'], restricted: false };
+  }
+  return state.categories.find(c => c.id === id);
+}
 const checkSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle"><polyline points="20 6 9 17 4 12"/></svg>';
 
 function shell(content) {
@@ -807,7 +812,7 @@ function shell(content) {
       ${(typeof getPendingSosQueue === 'function' && getPendingSosQueue().length > 0) ? `<span class="pendingQueuePill">⚠️ ${getPendingSosQueue().length} Queued Offline</span>` : ''}
     </div>
     ${state.error ? `<div class="toast" role="alert">${esc(state.error)}<button data-action="clear-error">×</button></div>` : ''}
-    ${state.notice ? `<aside class="liveNotice ${state.notice.priority?.toLowerCase() || ''}" role="alert"><span class="liveDot"></span><div><small>LIVE SOS UPDATE</small><b>${esc(state.notice.message)}</b>${state.notice.location ? `<span>⌖ ${esc(state.notice.location.building)} · ${esc(state.notice.location.floor)} · ${esc(state.notice.location.room)}</span>` : ''}</div><button data-action="open-notice">View</button><button class="noticeClose" data-action="dismiss-notice" aria-label="Dismiss notification">×</button></aside>` : ''}
+    ${state.notice ? `<aside class="liveNotice ${state.notice.priority?.toLowerCase() || ''}" role="alert"><span class="liveDot"></span><div><small>LIVE SOS UPDATE</small><b>${esc(typeof state.notice === 'string' ? state.notice : (state.notice?.message || ''))}</b>${state.notice.location ? `<span>⌖ ${esc(state.notice.location.building)} · ${esc(state.notice.location.floor)} · ${esc(state.notice.location.room)}</span>` : ''}</div><button data-action="open-notice">View</button><button class="noticeClose" data-action="dismiss-notice" aria-label="Dismiss notification">×</button></aside>` : ''}
     <main>${content}</main>
     <footer>If danger is immediate, follow your college’s emergency policy and contact local emergency services.</footer>
   </div>`;
@@ -1295,7 +1300,7 @@ function active(i) {
     <section class="activeHero">
       <div class="pulse">!</div>
       <p class="eyebrow">STUDENT DASHBOARD · SOS ACTIVE</p>
-      <h1>${esc(c?.name || 'Emergency')}</h1>
+      <h1>${esc(i.emergency_type || i.emergencyType || c?.name || 'Emergency')}</h1>
       <p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p>
       <div class="location">${locDisplay}</div>
       ${hasGps && mapsUrl ? `
@@ -1460,7 +1465,7 @@ function cards(items) {
         <span class="priority ${i.priority.toLowerCase()}">${i.priority}</span>
       </div>
       <p class="eyebrow">${i.id}</p>
-      <h3>${esc(c?.name || 'Emergency')}</h3>
+      <h3>${esc(i.emergency_type || i.emergencyType || c?.name || 'Emergency')}</h3>
       <dl>
         <div><dt>Reported</dt><dd class="reportedMeta">${esc(reportedTime)}</dd></div>
         <div><dt>Student</dt><dd>${esc(i.student_name)} · ${esc(i.student_id)}</dd></div>
@@ -1505,7 +1510,7 @@ function details(i) {
     <div class="detailsTop">
       <div>
         <p class="eyebrow">${i.id}</p>
-        <h1>${esc(c?.name || 'Emergency')}</h1>
+        <h1>${esc(i.emergency_type || i.emergencyType || c?.name || 'Emergency')}</h1>
       </div>
       <div class="detailsTopRight">
         <span class="priority ${i.priority.toLowerCase()}">${i.priority}</span>
@@ -1527,6 +1532,8 @@ function details(i) {
           <div><dt>Student name</dt><dd>${esc(i.student_name)}</dd></div>
           <div><dt>Student ID</dt><dd>${esc(i.student_id)}</dd></div>
           <div><dt>Reported</dt><dd class="reportedMeta">${esc(reportedTime)}</dd></div>
+          <div><dt>Emergency type</dt><dd>${esc(i.emergency_type || i.emergencyType || c?.name || 'General Emergency')}</dd></div>
+          ${i.source ? `<div><dt>Source</dt><dd>${esc(i.source)}</dd></div>` : ''}
           <div><dt>Emergency description</dt><dd>${esc(i.description || 'No description provided')}</dd></div>
           <div><dt>Assigned to</dt><dd>${labels[i.primary_department_id] || 'Emergency Team'}</dd></div>
           ${i.accepted_by_name ? `<div><dt>Responder</dt><dd>${esc(i.accepted_by_name)}</dd></div>` : ''}
@@ -2113,6 +2120,197 @@ async function executeSosSubmission({ categoryId, description = '', building = '
   }
 }
 
+/**
+ * Automatically captures current live GPS location and directly submits an SOS incident
+ * from the main Student Dashboard's "Send SOS Now" button without opening the details form.
+ */
+async function handleInstantOneClickSos(btnEl) {
+  if (state.busy || isSendingSos) {
+    console.warn('[SOS:Instant] SOS submission already in progress. Ignoring duplicate click.');
+    return;
+  }
+
+  // Ensure user is an authenticated student
+  if (!state.user || isResponderUser(state.user)) {
+    state.error = 'You must be signed in as a student to send an emergency SOS.';
+    render();
+    return;
+  }
+
+  isSendingSos = true;
+  state.busy = true;
+  state.error = '';
+
+  const originalContent = btnEl ? btnEl.innerHTML : '🚨 Send SOS Now';
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.innerHTML = '<span class="btnSpinner"></span> Getting your location and sending SOS...';
+  }
+
+  try {
+    // 1. Immediately request and capture live GPS location directly from browser Geolocation API
+    console.log('[SOS:Instant] Capturing live GPS location via Geolocation API...');
+    const gpsResult = await captureLiveGps(10000, (msg) => {
+      if (btnEl) {
+        btnEl.innerHTML = `<span class="btnSpinner"></span> ${msg}`;
+      }
+    });
+
+    console.log('[SOS:Instant] GPS capture result:', gpsResult);
+
+    // 2. Location permissions and error verification:
+    // If GPS is unavailable or permission is denied, display a clear error message explaining
+    // that the location could not be obtained. Do NOT silently send a false or default location.
+    const hasGps = gpsResult &&
+      gpsResult.locationStatus === 'available' &&
+      gpsResult.latitude != null &&
+      gpsResult.longitude != null &&
+      Number.isFinite(Number(gpsResult.latitude)) &&
+      Number.isFinite(Number(gpsResult.longitude));
+
+    if (!hasGps) {
+      let errorMsg = 'Could not obtain your live GPS location.';
+      if (gpsResult?.locationStatus === 'permission_denied') {
+        errorMsg = 'Could not obtain your live GPS location: Location permission was denied. Please allow location access in your browser to send an automatic emergency SOS.';
+      } else if (gpsResult?.locationStatus === 'timeout') {
+        errorMsg = 'Could not obtain your live GPS location: GPS request timed out. Please ensure your device GPS is turned on and try again.';
+      } else {
+        errorMsg = `Could not obtain your live GPS location: ${gpsResult?.reason || 'Location signal unavailable'}. Please verify device location services are enabled.`;
+      }
+
+      console.warn('[SOS:Instant] GPS unavailable. Aborting automatic SOS submission:', errorMsg);
+      state.error = errorMsg;
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.innerHTML = originalContent;
+      }
+      render();
+      return;
+    }
+
+    if (btnEl) {
+      btnEl.innerHTML = '<span class="btnSpinner"></span> Sending SOS to emergency responders...';
+    }
+
+    // 3. Assemble automatic SOS data with existing authenticated student details
+    const idempotencyKey = crypto.randomUUID();
+    const payload = {
+      categoryId: 'general',
+      emergencyType: 'General Emergency',
+      emergency_type: 'General Emergency',
+      source: 'Student Dashboard — Send SOS Now',
+      studentName: state.user.name,
+      studentId: state.user.id,
+      description: '',
+      location: {
+        building: '',
+        floor: '',
+        room: '',
+        area: '',
+        latitude: Number(gpsResult.latitude),
+        longitude: Number(gpsResult.longitude),
+        accuracy: gpsResult.accuracy != null ? Number(gpsResult.accuracy) : null,
+        gpsTimestamp: gpsResult.gpsTimestamp || new Date().toISOString(),
+        locationStatus: 'available',
+        source: 'Student Dashboard — Send SOS Now'
+      },
+      idempotencyKey
+    };
+
+    console.log('[SOS:Instant] Submitting automatic SOS payload to /api/sos:', payload);
+
+    // 4. Offline handling
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
+      addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
+      const pendingInc = {
+        id: localId,
+        localId,
+        category_id: 'general',
+        emergency_type: 'General Emergency',
+        emergencyType: 'General Emergency',
+        source: 'Student Dashboard — Send SOS Now',
+        student_id: state.user.id,
+        student_name: state.user.name,
+        description: '',
+        location: payload.location,
+        priority: 'HIGH',
+        status: 'QUEUED_OFFLINE',
+        serverConfirmed: false,
+        primary_department_id: 'DEPT_SECURITY',
+        assigned_departments: ['DEPT_SECURITY', 'DEPT_ADMIN'],
+        created_at: new Date().toISOString(),
+        timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
+      };
+      state.incidents.unshift(pendingInc);
+      state.selected = null;
+      state.error = '⚠️ Internet connection unavailable. Your SOS is saved in your offline queue and will automatically dispatch once connectivity returns.';
+      render();
+      return;
+    }
+
+    // 5. Submit to existing /api/sos endpoint
+    let created;
+    try {
+      created = await api('/api/sos', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+    } catch (apiErr) {
+      console.warn('[SOS:Instant] Backend request failed:', apiErr.message);
+      state.error = apiErr.message || 'Failed to submit SOS. Please try again.';
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.innerHTML = originalContent;
+      }
+      render();
+      return;
+    }
+
+    console.log('[SOS:Instant] SOS created successfully! ID:', created.id);
+
+    // 6. Update UI and notifications
+    if (btnEl) {
+      btnEl.innerHTML = '✓ SOS sent successfully.';
+    }
+
+    // Mirror to Cloud Firestore
+    syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
+
+    // Instant broadcast across open tabs
+    if (sosBroadcast) {
+      sosBroadcast.postMessage({ event: 'sos.created', incident: created });
+    }
+
+    state.selected = null; // Shows student dashboard with active SOS hero
+    const existingIdx = state.incidents.findIndex(i => i.id === created.id);
+    if (existingIdx !== -1) {
+      state.incidents[existingIdx] = created;
+    } else {
+      state.incidents.unshift(created);
+    }
+
+    state.notice = {
+      message: 'SOS sent successfully. Emergency responders have been alerted.',
+      priority: 'HIGH',
+      id: created.id
+    };
+
+    await refresh();
+  } catch (err) {
+    console.error('[SOS:Instant] Error submitting SOS:', err);
+    state.error = err.message || 'An error occurred while sending your SOS.';
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.innerHTML = originalContent;
+    }
+    render();
+  } finally {
+    isSendingSos = false;
+    state.busy = false;
+  }
+}
+
 // Form submit delegation
 app.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -2490,11 +2688,11 @@ document.addEventListener('click', async (e) => {
   if (a === 'close-details') { state.selected = null; render(); }
   if (a === 'refresh') refresh();
 
-  // Instant One-Click SOS triggered from hero banner
+  // Instant One-Click SOS triggered from Student Dashboard hero banner
   if (a === 'instant-one-click-sos') {
-    app.innerHTML = shell(confirm(category('other') || state.categories[0]));
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    return;
+    e.preventDefault();
+    e.stopPropagation();
+    return handleInstantOneClickSos(el);
   }
 
   if (a === 'gps') {

@@ -53,7 +53,17 @@ const audit=(db,id,u,action,oldValue,newValue,ip,session)=>db.collection('audit'
 const notify=(db,id,userId,departmentId,priority,message,session)=>db.collection('notifications').insertOne({user_id:userId,department_id:departmentId,incident_id:id,type:'SOS',priority,message,acknowledged:false,created_at:new Date().toISOString()},{session});
 export async function createIncident(body,u,ip=''){
   if(u.role!=='STUDENT')throw httpError('Only students can create an SOS',403);
-  const category=categories.find(c=>c.id===body.categoryId) || categories.find(c=>c.id==='other') || categories[0];
+  const isGeneral = body.categoryId === 'general' || body.emergencyType === 'General Emergency' || body.emergency_type === 'General Emergency';
+  const generalCategory = isGeneral ? {
+    id: 'general',
+    name: 'General Emergency',
+    icon: 'SOS',
+    priority: 'HIGH',
+    primaryDepartmentId: 'DEPT_SECURITY',
+    departmentIds: ['DEPT_SECURITY', 'DEPT_ADMIN'],
+    restricted: false
+  } : null;
+  const category=generalCategory || categories.find(c=>c.id===body.categoryId) || categories.find(c=>c.id==='other') || categories[0];
   if(!category)throw httpError('Invalid emergency category',400);
   const description=String(body.description||'').trim();
   if(description.length>1000)throw httpError('Description is too long',400);
@@ -73,6 +83,9 @@ export async function createIncident(body,u,ip=''){
       created={
         id,
         category_id:category.id,
+        emergency_type: body.emergencyType || body.emergency_type || category.name,
+        emergencyType: body.emergencyType || body.emergency_type || category.name,
+        source: body.source || location.source || 'MANUAL',
         student_id:u.id,
         student_name:u.name,
         description,
