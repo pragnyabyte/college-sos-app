@@ -858,9 +858,9 @@ function showLoginSuccess(msg) {
   state.error = '';
   let toast = document.querySelector('#loginToast');
   if (!toast) {
-    const form = document.querySelector('#login');
-    const header = form?.querySelector('.formHeader');
-    if (form && header) {
+    const card = document.querySelector('.authCard');
+    const header = card?.querySelector('.authHeader');
+    if (card && header) {
       toast = document.createElement('div');
       toast.id = 'loginToast';
       toast.className = 'toast loginToast success';
@@ -871,7 +871,7 @@ function showLoginSuccess(msg) {
   if (toast) {
     toast.className = 'toast loginToast success';
     toast.style.display = 'flex';
-    toast.innerHTML = `${esc(msg)}<button type="button" data-action="clear-error">×</button>`;
+    toast.innerHTML = `<span>${esc(msg)}</span><button type="button" data-action="clear-error" aria-label="Dismiss">×</button>`;
     const btn = toast.querySelector('[data-action="clear-error"]');
     if (btn) {
       btn.onclick = (e) => {
@@ -898,12 +898,12 @@ async function handleRegister(formEl) {
     return;
   }
   if (!regdNo) {
-    showLoginError('Please enter your Registration / ID No.');
+    showLoginError('Please enter your Registration ID.');
     regdInput?.focus();
     return;
   }
   if (regdNo.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regdNo)) {
-    showLoginError('Email addresses are not accepted. Please enter your Registration / ID No.');
+    showLoginError('Email addresses are not accepted. Please enter your Registration ID.');
     if (regdInput) {
       regdInput.value = '';
       regdInput.focus();
@@ -920,7 +920,7 @@ async function handleRegister(formEl) {
   const submitBtn = f.querySelector('#btn-register-submit') || f.querySelector('button[type="submit"]');
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Registering…';
+    submitBtn.innerHTML = '<span>Creating account…</span>';
   }
 
   try {
@@ -942,117 +942,128 @@ async function handleRegister(formEl) {
     login();
     showLoginSuccess('Registration successful! You can now sign in.');
     const newRegd = document.querySelector('#regdNo');
-    if (newRegd) newRegd.value = regdNo;
-    const verif = document.querySelector('#authVerification');
-    if (verif) verif.focus();
+    if (newRegd) {
+      newRegd.value = regdNo;
+      newRegd.focus();
+    }
   } catch (err) {
     showLoginError(err.message || 'Registration failed.');
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.textContent = 'Register →';
+      submitBtn.innerHTML = '<span>Create Account</span>';
     }
   } finally {
     state.busy = false;
   }
 }
 
-// ONE UNIFIED SIGN IN SCREEN FOR ALL USERS (Students, Responders)
+// CLEAN, MINIMAL, MOBILE-RESPONSIVE STUDENT & RESPONDER AUTHENTICATION SCREEN
 function login() {
   const isResp = currentAuthRole === 'RESPONDER';
   const isRegister = !isResp && studentAuthMode === 'register';
 
-  let eyebrow = 'STUDENT PORTAL';
   let heading = 'Student Sign In';
-  let subtitle = 'Enter your details to open your emergency response dashboard.';
+  let subtitle = 'Access your emergency response dashboard.';
 
   if (isResp) {
-    eyebrow = 'COMMAND & DISPATCH';
     heading = 'Responder Sign In';
     subtitle = 'Authorized emergency response unit authentication.';
   } else if (isRegister) {
-    eyebrow = 'STUDENT REGISTRATION';
     heading = 'New Student Registration';
-    subtitle = 'Register once to access emergency assistance.';
+    subtitle = 'Register once to access your emergency response dashboard.';
   }
 
-  app.innerHTML = `<div class="login">
-    <section>
-      <div class="loginIcon">SOS</div>
-      <p class="eyebrow">COLLEGE SAFETY NETWORK</p>
-      <h1>Help, exactly when<br>it matters.</h1>
-      <p>Report emergencies. Coordinate response. Keep every student informed.</p>
-      <div class="secure">● Secure · Audited · Real-time 24/7</div>
-    </section>
-    <form id="login" autocomplete="off" novalidate>
-      <!-- Decoy fields to intercept aggressive browser credential autofill -->
-      <div style="position:absolute;left:-9999px;top:-9999px;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden" aria-hidden="true">
-        <input type="text" name="fake_username_autofill" tabindex="-1" autocomplete="username">
-        <input type="password" name="fake_password_autofill" tabindex="-1" autocomplete="current-password">
-      </div>
-      <div class="formHeader">
-        <p class="eyebrow ${isResp || isRegister ? 'danger' : ''}">${eyebrow}</p>
-        <h2>${heading}</h2>
-        <p>${subtitle}</p>
-      </div>
-      <div id="loginToast" class="toast loginToast" role="alert" style="${state.error ? '' : 'display:none;'}">${esc(state.error || '')}<button type="button" data-action="clear-error">×</button></div>
+  app.innerHTML = `
+    <div class="authPage">
+      <div class="authCard">
+        <!-- Top Section -->
+        <div class="authHeader">
+          <div class="authIcon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="M12 8v8"/>
+              <path d="M8 12h8"/>
+            </svg>
+          </div>
+          <h1 class="authHeading">${esc(heading)}</h1>
+          <p class="authSubtitle">${esc(subtitle)}</p>
+        </div>
 
-      <label>Role
-        <select name="role" id="role" required>
-          <option value="STUDENT" ${!isResp ? 'selected' : ''}>Student</option>
-          <option value="RESPONDER" ${isResp ? 'selected' : ''}>Emergency Responder</option>
-        </select>
-      </label>
+        <div id="loginToast" class="toast loginToast" role="alert" style="${state.error ? '' : 'display:none;'}">
+          <span>${esc(state.error || '')}</span>
+          <button type="button" data-action="clear-error" aria-label="Dismiss error">×</button>
+        </div>
+
+        <form id="login" autocomplete="off" novalidate>
+          <!-- Decoy fields to intercept aggressive browser credential autofill -->
+          <div style="position:absolute;left:-9999px;top:-9999px;width:0;height:0;opacity:0;pointer-events:none;overflow:hidden" aria-hidden="true">
+            <input type="text" name="fake_username_autofill" tabindex="-1" autocomplete="username">
+            <input type="password" name="fake_password_autofill" tabindex="-1" autocomplete="current-password">
+          </div>
+
+          ${isRegister ? `
+            <!-- NEW STUDENT REGISTRATION (ONE-TIME ONLY) -->
+            <div class="authField">
+              <label for="regName">Full Name</label>
+              <input required type="text" name="name" id="regName" placeholder="Enter your full name" autocomplete="name" enterkeyhint="next">
+            </div>
+            <div class="authField">
+              <label for="regRegdNo">Registration ID</label>
+              <input required type="text" name="registration_number" id="regRegdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter your registration ID" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter your Registration ID." enterkeyhint="done">
+            </div>
+            <button class="authSubmitBtn" type="submit" id="btn-register-submit">
+              <span>Create Account</span>
+            </button>
+            <div class="authCardBottom">
+              <p class="authBottomText">Already registered? <a href="#" id="linkToSignIn" class="authBottomLink">Sign in</a></p>
+            </div>
+          ` : (!isResp ? `
+            <!-- EXISTING STUDENT SIGN-IN -->
+            <div class="authField">
+              <label for="regdNo">Registration ID</label>
+              <input required type="text" name="registration_number" id="regdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter your registration ID" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter your Registration ID." enterkeyhint="done">
+            </div>
+            <button class="authSubmitBtn" type="submit" id="open-dashboard-btn">
+              <span>Sign In</span>
+              <svg class="authBtnArrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </button>
+            <div class="authCardBottom">
+              <p class="authBottomText">New student? <a href="#" id="linkToRegister" class="authBottomLink">Register here</a></p>
+            </div>
+          ` : `
+            <!-- RESPONDER LOGIN -->
+            <div class="authField">
+              <label for="regdNo">Registration / ID No.</label>
+              <input required type="text" name="registration_number" id="regdNo" value="" placeholder="Enter responder ID (e.g. RESP-1111)" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter responder ID." enterkeyhint="next">
+            </div>
+            <div class="authField" id="pinGroup">
+              <label for="pin">Responder PIN</label>
+              <div class="pinWrapper">
+                <input type="password" name="pin" id="pin" value="" placeholder="Enter PIN" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly')">
+                <button type="button" class="btnTogglePin" id="togglePinVisibility" aria-label="Show PIN" title="Show PIN">
+                  <svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
+                </button>
+              </div>
+            </div>
+            <button class="authSubmitBtn" type="submit" id="open-dashboard-btn">
+              <span>Open Dashboard</span>
+              <svg class="authBtnArrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+            </button>
+            <div class="authCardBottom">
+              <p class="authBottomText"><a href="#" id="linkToStudent" class="authBottomLink">← Back to Student Sign In</a></p>
+            </div>
+          `)}
+        </form>
+      </div>
 
       ${!isResp ? `
-        <!-- Two clear options on the student sign-in page -->
-        <div class="authModeSwitcher" id="authModeSwitcher">
-          <button type="button" class="authModeBtn ${!isRegister ? 'active' : ''}" id="btnModeSignIn">Already Registered? Sign In</button>
-          <button type="button" class="authModeBtn ${isRegister ? 'active' : ''}" id="btnModeRegister">New Student? Register</button>
+        <div class="authPortalFooter">
+          <a href="#" id="linkToResponder" class="portalSwitchLink">Emergency Responder Portal →</a>
         </div>
       ` : ''}
+    </div>
+  `;
 
-      ${isRegister ? `
-        <!-- NEW STUDENT REGISTRATION (ONE-TIME ONLY) -->
-        <label>Full Name <span class="reqTag">*</span>
-          <input required type="text" name="name" id="regName" placeholder="Enter full name" autocomplete="name" enterkeyhint="next">
-        </label>
-        <label>Registration ID <span class="reqTag">*</span>
-          <input required type="text" name="registration_number" id="regRegdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="done">
-        </label>
-        <button class="primary" type="submit" id="btn-register-submit">Register →</button>
-        <p class="authSwitchText">Already registered? <a href="#" id="linkToSignIn" class="authSwitchLink">Sign In</a></p>
-      ` : (!isResp ? `
-        <!-- EXISTING STUDENT SIGN-IN -->
-        <label>Registration ID <span class="reqTag">*</span>
-          <input required type="text" name="registration_number" id="regdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="next">
-        </label>
-        <label>Verification (Full Name or Password) <span class="reqTag">*</span>
-          <input required type="text" name="verification" id="authVerification" placeholder="Enter registered Full Name or Password" autocomplete="off" enterkeyhint="done">
-        </label>
-        <button class="primary" type="submit" id="open-dashboard-btn">Sign In →</button>
-        <p class="authSwitchText">New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a></p>
-      ` : `
-        <!-- RESPONDER LOGIN -->
-        <label>Registration / ID No. <span class="reqTag">*</span>
-          <input required type="text" name="registration_number" id="regdNo" value="" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID (e.g. 2024CS001, STU-001, EMP-101). Email addresses are not accepted." enterkeyhint="next">
-        </label>
-        <div id="pinGroup">
-          <label>Responder PIN <span class="reqTag">*</span>
-            <div class="pinWrapper">
-              <input type="password" name="pin" id="pin" value="" placeholder="Enter Responder PIN" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" readonly onfocus="this.removeAttribute('readonly')">
-              <button type="button" class="btnTogglePin" id="togglePinVisibility" aria-label="Show PIN" title="Show PIN">
-                <svg class="eyeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 .696 10.75 10.75 0 0 1-19.876 0z"/><circle cx="12" cy="12" r="3"/></svg>
-              </button>
-            </div>
-          </label>
-        </div>
-        <button class="primary" type="submit" id="open-dashboard-btn">Open Dashboard →</button>
-        <small id="roleHint">Emergency Responders require authorized ID and PIN.</small>
-      `)}
-    </form>
-  </div>`;
-
-  const roleSelect = document.querySelector('#role');
   const regdInput = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
   const pinInput = document.querySelector('#pin');
   const togglePinBtn = document.querySelector('#togglePinVisibility');
@@ -1074,20 +1085,25 @@ function login() {
     if (entered) savedRegdForSignIn = entered;
     login();
   };
+  const switchToResponder = (e) => {
+    if (e) e.preventDefault();
+    clearLoginError();
+    currentAuthRole = 'RESPONDER';
+    studentAuthMode = 'signin';
+    login();
+  };
+  const switchToStudent = (e) => {
+    if (e) e.preventDefault();
+    clearLoginError();
+    currentAuthRole = 'STUDENT';
+    studentAuthMode = 'signin';
+    login();
+  };
 
-  document.querySelector('#btnModeSignIn')?.addEventListener('click', switchToSignIn);
   document.querySelector('#linkToSignIn')?.addEventListener('click', switchToSignIn);
-  document.querySelector('#btnModeRegister')?.addEventListener('click', switchToRegister);
   document.querySelector('#linkToRegister')?.addEventListener('click', switchToRegister);
-
-  // Role select listener
-  if (roleSelect) {
-    roleSelect.addEventListener('change', () => {
-      clearLoginError();
-      currentAuthRole = roleSelect.value;
-      login();
-    });
-  }
+  document.querySelector('#linkToResponder')?.addEventListener('click', switchToResponder);
+  document.querySelector('#linkToStudent')?.addEventListener('click', switchToStudent);
 
   // Ensure Responder PIN field starts 100% empty with no bullets
   if (pinInput) {
@@ -1629,23 +1645,21 @@ async function handleLogin(formEl) {
   const regdInput = f.elements['registration_number'] || document.querySelector('#regdNo');
   const roleSelect = f.elements['role'] || document.querySelector('#role');
   const pinInput = f.elements['pin'] || document.querySelector('#pin');
-  const verifInput = f.elements['verification'] || document.querySelector('#authVerification');
 
   const regdNo = String(regdInput?.value || '').trim();
   const role = String(roleSelect?.value || currentAuthRole || 'STUDENT').trim();
   const pin = String(pinInput?.value || '').trim();
-  const verification = String(verifInput?.value || '').trim();
   const isResp = role === 'RESPONDER';
 
   if (!isResp) {
     // STUDENT LOGIN VALIDATION
     if (!regdNo) {
-      showLoginError('Please enter your Registration / ID No.');
+      showLoginError('Please enter your Registration ID.');
       regdInput?.focus();
       return;
     }
     if (regdNo.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(regdNo)) {
-      showLoginError('Email addresses are not accepted. Please enter your Registration / ID No.');
+      showLoginError('Email addresses are not accepted. Please enter your Registration ID.');
       if (regdInput) {
         regdInput.value = '';
         regdInput.focus();
@@ -1658,11 +1672,6 @@ async function handleLogin(formEl) {
         regdInput.value = '';
         regdInput.focus();
       }
-      return;
-    }
-    if (!verification) {
-      showLoginError('Please enter your registered Full Name or Password.');
-      verifInput?.focus();
       return;
     }
   } else {
@@ -1683,11 +1692,6 @@ async function handleLogin(formEl) {
       return;
     }
 
-    // 1. Wrong Registration Number
-    // - If incorrect Registration Number, do NOT clear or reset the entire screen/form.
-    // - Keep the page, layout, entered PIN, buttons, and all other UI elements unchanged.
-    // - Only clear/vacate the incorrect Registration Number field.
-    // - Show a small, clear error message: "Invalid Registration Number".
     if (regdNo !== 'RESP-1111') {
       showLoginError('Invalid Registration Number');
       if (regdInput) {
@@ -1697,11 +1701,6 @@ async function handleLogin(formEl) {
       return;
     }
 
-    // 2. Wrong PIN
-    // - If incorrect PIN, do NOT clear or reset the entire screen/form.
-    // - Keep the page, layout, Registration Number, buttons, and all other UI elements unchanged.
-    // - Only clear/vacate the incorrect PIN field.
-    // - Show a small, clear error message: "Invalid PIN".
     if (pin !== '2026') {
       showLoginError('Invalid PIN');
       if (pinInput) {
@@ -1717,14 +1716,14 @@ async function handleLogin(formEl) {
   const submitBtn = f.querySelector('#open-dashboard-btn') || f.querySelector('button[type="submit"]');
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.textContent = 'Authenticating…';
+    submitBtn.innerHTML = isResp ? '<span>Authenticating…</span>' : '<span>Signing in…</span>';
   }
 
   try {
     console.log(`[SOS:Auth] Logging in as ${regdNo} with role: ${role}`);
     const loginPayload = isResp
       ? { regdNo, role, pin }
-      : { regdNo, role, verification };
+      : { regdNo, role: 'STUDENT' };
 
     const res = await fetch(buildApiUrl('/api/auth/login'), {
       method: 'POST',
@@ -1808,18 +1807,13 @@ async function handleLogin(formEl) {
           pinInput.focus();
         }
       }
-    } else if (!isResp && !isNetwork) {
-      // For student: If invalid login details (401), clear ONLY the verification input:
-      if (err.status === 401 && verifInput) {
-        verifInput.value = '';
-        verifInput.focus();
-      }
-      // If 404 (Account not found), keep the registration number intact!
     }
 
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.textContent = isResp ? 'Open Dashboard →' : 'Sign In →';
+      submitBtn.innerHTML = isResp
+        ? `<span>Open Dashboard</span><svg class="authBtnArrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>`
+        : `<span>Sign In</span><svg class="authBtnArrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>`;
     }
   } finally {
     state.busy = false;
@@ -2114,6 +2108,9 @@ async function executeSosSubmission({ categoryId, description = '', building = '
 app.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (e.target.id === 'login') {
+    if (studentAuthMode === 'register' && currentAuthRole !== 'RESPONDER') {
+      return handleRegister(e.target);
+    }
     return handleLogin(e.target);
   }
   if (e.target.id === 'create-sos') {
@@ -2343,6 +2340,40 @@ document.addEventListener('click', async (e) => {
   if (el.id === 'btn-register-submit') {
     e.preventDefault();
     return handleRegister(el.closest('form'));
+  }
+
+  if (el.id === 'linkToSignIn') {
+    e.preventDefault();
+    clearLoginError();
+    studentAuthMode = 'signin';
+    const entered = document.querySelector('#regRegdNo')?.value || document.querySelector('#regdNo')?.value;
+    if (entered) savedRegdForSignIn = entered;
+    return login();
+  }
+
+  if (el.id === 'linkToRegister') {
+    e.preventDefault();
+    clearLoginError();
+    studentAuthMode = 'register';
+    const entered = document.querySelector('#regdNo')?.value || document.querySelector('#regRegdNo')?.value;
+    if (entered) savedRegdForSignIn = entered;
+    return login();
+  }
+
+  if (el.id === 'linkToResponder') {
+    e.preventDefault();
+    clearLoginError();
+    currentAuthRole = 'RESPONDER';
+    studentAuthMode = 'signin';
+    return login();
+  }
+
+  if (el.id === 'linkToStudent') {
+    e.preventDefault();
+    clearLoginError();
+    currentAuthRole = 'STUDENT';
+    studentAuthMode = 'signin';
+    return login();
   }
 
   if (el.dataset.view) {

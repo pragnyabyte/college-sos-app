@@ -226,11 +226,17 @@ test('Student Sign-In: unregistered student cannot sign in (Account not found)',
     );
 });
 
-test('Student Sign-In: rejects incorrect credentials and empty verification', async () => {
+test('Student Sign-In: signs in with Registration ID alone and retrieves profile', async () => {
     const testId = 'STU-FAIL-' + Math.floor(100000 + Math.random() * 900000);
     await registerStudent({ name: 'Ananya Roy', regdNo: testId });
 
-    // Wrong name/password
+    // 1. Sign in with Registration ID alone (no verification field needed)
+    const session = await verifyStudentCredentials(testId);
+    assert.equal(session.id, testId);
+    assert.equal(session.name, 'Ananya Roy');
+    assert.equal(session.role, 'STUDENT');
+
+    // 2. Reject if invalid verification is explicitly supplied
     await assert.rejects(
         () => verifyStudentCredentials(testId, 'Wrong Name'),
         (err) => {
@@ -240,12 +246,12 @@ test('Student Sign-In: rejects incorrect credentials and empty verification', as
         }
     );
 
-    // Missing verification (registration ID alone is not enough)
+    // 3. Reject empty Registration ID
     await assert.rejects(
-        () => verifyStudentCredentials(testId, ''),
+        () => verifyStudentCredentials(''),
         (err) => {
-            assert.equal(err.status, 401);
-            assert.equal(err.message, 'Invalid login details. Please try again.');
+            assert.equal(err.status, 400);
+            assert.equal(err.message, 'Please enter your Registration ID.');
             return true;
         }
     );

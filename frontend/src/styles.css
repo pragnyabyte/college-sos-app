@@ -867,155 +867,230 @@ nav button.on:after {
   color: #059669 !important;
 }
 
-/* Student Auth Mode Switcher (Sign In vs Register) */
-.authModeSwitcher {
+/* ==========================================================================
+   Clean, Minimal & Modern Student Authentication (Sign In & Registration)
+   ========================================================================== */
+.authPage {
+  min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
-  background: #eef2f6;
-  border: 1px solid #d8e2ea;
-  border-radius: 10px;
-  padding: 4px;
-  margin: 18px 0 20px;
-  gap: 4px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  background: #f8fafc;
+  box-sizing: border-box;
 }
 
-.authModeBtn {
-  flex: 1;
-  padding: 10px 12px;
-  border: 0;
-  background: transparent;
-  color: #4b6377;
-  font-weight: 600;
-  font-size: 13.5px;
-  border-radius: 7px;
-  transition: all 0.2s ease;
+.authCard {
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 36px 32px 28px;
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.04), 0 10px 25px -5px rgba(15, 23, 42, 0.06);
+  box-sizing: border-box;
+}
+
+.authHeader {
   text-align: center;
-  white-space: nowrap;
+  margin-bottom: 24px;
 }
 
-.authModeBtn:hover {
-  color: var(--navy);
+.authIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: #fee2e2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  margin-bottom: 14px;
 }
 
-.authModeBtn.active {
-  background: white;
-  color: var(--navy);
-  font-weight: 700;
-  box-shadow: 0 2px 6px rgba(16, 40, 61, 0.08);
+.authHeading {
+  font-family: 'Manrope', sans-serif;
+  font-size: 23px;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0 0 6px;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
-.authSwitchText {
-  text-align: center;
-  margin-top: 18px;
+.authSubtitle {
   font-size: 13.5px;
   color: #64748b;
+  margin: 0;
+  line-height: 1.45;
 }
 
-.authSwitchLink {
-  color: #0284c7;
+.authField {
+  margin-bottom: 18px;
+}
+
+.authField label {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+  text-align: left;
+}
+
+.authField input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  font-size: 15px;
+  color: #0f172a;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.authField input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.authField input::placeholder {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.authSubmitBtn {
+  width: 100%;
+  height: 48px;
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 15px;
   font-weight: 700;
+  border: none;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  margin-top: 10px;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
+}
+
+.authSubmitBtn:hover {
+  background: #1e293b;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15);
+}
+
+.authSubmitBtn:active {
+  transform: scale(0.99);
+}
+
+.authSubmitBtn:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.authBtnArrow {
+  transition: transform 0.15s ease;
+}
+
+.authSubmitBtn:hover .authBtnArrow {
+  transform: translateX(2px);
+}
+
+.authCardBottom {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid #f1f5f9;
+  text-align: center;
+}
+
+.authBottomText {
+  font-size: 13.5px;
+  color: #64748b;
+  margin: 0;
+}
+
+.authBottomLink {
+  color: #2563eb;
+  font-weight: 600;
   text-decoration: none;
   cursor: pointer;
+  margin-left: 3px;
   transition: color 0.15s ease;
 }
 
-.authSwitchLink:hover {
+.authBottomLink:hover {
+  color: #1d4ed8;
   text-decoration: underline;
-  color: #0369a1;
 }
 
-.reqTag {
-  color: #ef4444;
-  font-size: 12px;
-  font-weight: 600;
-  margin-left: 4px;
-}
-
-footer {
+.authPortalFooter {
+  margin-top: 18px;
   text-align: center;
-  padding: 25px;
-  color: #7b8790;
-  font-size: 12px;
-  border-top: 1px solid var(--border);
 }
 
-/* Desktop Login Layout */
-.login {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 1.15fr .85fr;
+.portalSwitchLink {
+  font-size: 12.5px;
+  color: #94a3b8;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  transition: color 0.15s ease, background-color 0.15s ease;
 }
 
-.login > section {
-  background: var(--navy);
-  color: white;
+.portalSwitchLink:hover {
+  color: #475569;
+  background: #f1f5f9;
+}
+
+/* Toast inside auth card */
+.authCard .loginToast {
+  position: static !important;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 12%;
-  position: relative;
-  overflow: hidden;
-}
-
-.login > section:after {
-  content: '';
-  width: 350px;
-  height: 350px;
-  border: 70px solid #ffffff08;
-  border-radius: 50%;
-  position: absolute;
-  right: -100px;
-  bottom: -100px;
-}
-
-.login h1 {
-  font: 800 53px/1.05 Manrope;
-  margin: 15px 0;
-}
-
-.login section > p:not(.eyebrow) {
-  color: #b9c8d3;
-  max-width: 500px;
-  font-size: 18px;
-}
-
-.loginIcon {
-  width: 60px;
-  height: 60px;
-  border: 2px solid #f55;
-  border-radius: 14px;
-  color: #ff8b8b;
-  display: grid;
-  place-items: center;
-  font: bold 17px Manrope;
-  margin-bottom: 30px;
-}
-
-.secure {
-  margin-top: 30px;
-  color: #8fbdad;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 18px;
+  padding: 10px 14px;
+  border-radius: 8px;
   font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  box-sizing: border-box;
 }
 
-.login form {
-  align-self: center;
-  margin: 10%;
-  max-width: 440px;
+.authCard .loginToast:not(.success) {
+  background: #fef2f2 !important;
+  border: 1px solid #fecaca !important;
+  color: #991b1b !important;
 }
 
-.login form h2 {
-  font: 800 34px Manrope;
-  color: var(--navy);
-  margin: 10px 0;
+.authCard .loginToast.success {
+  background: #ecfdf5 !important;
+  border: 1px solid #a7f3d0 !important;
+  color: #065f46 !important;
 }
 
-.login form > p {
-  color: #6d7a83;
-}
-
-.login form label {
-  display: block;
-  font-weight: 700;
-  margin: 16px 0;
+.authCard .loginToast button {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 17px;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: 8px;
+  line-height: 1;
 }
 
 .pinWrapper {
@@ -1033,7 +1108,7 @@ footer {
 .btnTogglePin {
   position: absolute;
   right: 8px;
-  top: calc(50% + 3.5px);
+  top: 50%;
   transform: translateY(-50%);
   background: transparent !important;
   border: none !important;
@@ -1048,9 +1123,6 @@ footer {
   justify-content: center;
   cursor: pointer;
   color: #64748b;
-  border-radius: 6px;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  z-index: 3;
 }
 
 .btnTogglePin:hover {
@@ -1229,71 +1301,59 @@ footer {
     font-size: 24px;
   }
 
-  /* Compact Mobile Sign In Header */
-  .login {
-    grid-template-columns: 1fr;
-    min-height: 100dvh;
-    display: flex;
-    flex-direction: column;
+  /* Mobile Authentication (Sign In & Registration) */
+  .authPage {
+    padding: 20px 14px;
+    justify-content: flex-start;
   }
 
-  .login > section {
-    padding: 24px 20px 18px;
-    flex-shrink: 0;
+  .authCard {
+    padding: 28px 20px 22px;
+    border-radius: 14px;
+    max-width: 100%;
   }
 
-  .loginIcon {
-    width: 40px;
-    height: 40px;
-    border-radius: 9px;
-    font-size: 14px;
-    margin-bottom: 10px;
+  .authIcon {
+    width: 42px;
+    height: 42px;
+    border-radius: 11px;
+    margin-bottom: 12px;
   }
 
-  .login h1 {
-    font-size: 24px;
-    margin: 6px 0;
+  .authHeading {
+    font-size: 21px;
+    margin-bottom: 5px;
   }
 
-  .login section > p:not(.eyebrow) {
+  .authSubtitle {
     font-size: 13px;
-    margin: 4px 0 8px;
-    line-height: 1.35;
   }
 
-  .secure {
-    margin-top: 8px;
-    font-size: 11px;
+  .authField {
+    margin-bottom: 16px;
   }
 
-  .login form {
-    margin: 16px auto 28px;
-    padding: 0 18px;
-    width: 100%;
-    max-width: 440px;
-    align-self: auto;
-    flex-grow: 1;
+  .authField label {
+    font-size: 13px;
   }
 
-  .login form h2 {
-    font-size: 24px;
-    margin: 6px 0;
+  .authField input {
+    height: 46px;
+    font-size: 15px;
   }
 
-  .login form > p {
-    font-size: 14px;
-    margin: 4px 0 12px;
+  .authSubmitBtn {
+    height: 48px;
+    font-size: 15px;
   }
 
-  .login form label {
-    margin: 12px 0;
-    font-size: 14px;
+  .authCardBottom {
+    margin-top: 20px;
+    padding-top: 14px;
   }
 
-  .login form .primary {
-    margin-top: 14px;
-    padding: 14px;
-    font-size: 16px;
+  .authBottomText {
+    font-size: 13.5px;
   }
 
   .actions {
