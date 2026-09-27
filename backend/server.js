@@ -185,8 +185,7 @@ const server = createServer(async (req, res) => {
         const pin = b.pin || b.password;
         u = await verifyResponderCredentials(regd, pin, b.name);
       } else {
-        const verification = b.verification !== undefined ? b.verification : (b.password || b.name);
-        u = await verifyStudentCredentials(regd, verification);
+        u = await verifyStudentCredentials(regd);
       }
       return json(res, 200, { token: issueToken(u), user: u });
     }

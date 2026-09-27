@@ -942,9 +942,10 @@ async function handleRegister(formEl) {
     login();
     showLoginSuccess('Registration successful! You can now sign in.');
     const newRegd = document.querySelector('#regdNo');
-    if (newRegd) newRegd.value = regdNo;
-    const verif = document.querySelector('#authVerification');
-    if (verif) verif.focus();
+    if (newRegd) {
+      newRegd.value = regdNo;
+      newRegd.focus();
+    }
   } catch (err) {
     showLoginError(err.message || 'Registration failed.');
     if (submitBtn) {
@@ -1003,14 +1004,6 @@ function login() {
         </select>
       </label>
 
-      ${!isResp ? `
-        <!-- Two clear options on the student sign-in page -->
-        <div class="authModeSwitcher" id="authModeSwitcher">
-          <button type="button" class="authModeBtn ${!isRegister ? 'active' : ''}" id="btnModeSignIn">Already Registered? Sign In</button>
-          <button type="button" class="authModeBtn ${isRegister ? 'active' : ''}" id="btnModeRegister">New Student? Register</button>
-        </div>
-      ` : ''}
-
       ${isRegister ? `
         <!-- NEW STUDENT REGISTRATION (ONE-TIME ONLY) -->
         <label>Full Name <span class="reqTag">*</span>
@@ -1022,12 +1015,9 @@ function login() {
         <button class="primary" type="submit" id="btn-register-submit">Register →</button>
         <p class="authSwitchText">Already registered? <a href="#" id="linkToSignIn" class="authSwitchLink">Sign In</a></p>
       ` : (!isResp ? `
-        <!-- EXISTING STUDENT SIGN-IN -->
+        <!-- EXISTING STUDENT SIGN-IN (Registration ID Only) -->
         <label>Registration ID <span class="reqTag">*</span>
-          <input required type="text" name="registration_number" id="regdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="next">
-        </label>
-        <label>Verification (Full Name or Password) <span class="reqTag">*</span>
-          <input required type="text" name="verification" id="authVerification" placeholder="Enter registered Full Name or Password" autocomplete="off" enterkeyhint="done">
+          <input required type="text" name="registration_number" id="regdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="done">
         </label>
         <button class="primary" type="submit" id="open-dashboard-btn">Sign In →</button>
         <p class="authSwitchText">New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a></p>
@@ -1057,7 +1047,7 @@ function login() {
   const pinInput = document.querySelector('#pin');
   const togglePinBtn = document.querySelector('#togglePinVisibility');
 
-  // Mode Switchers
+  // Mode Switchers (Bottom Link Navigation)
   const switchToSignIn = (e) => {
     if (e) e.preventDefault();
     clearLoginError();
@@ -1075,9 +1065,7 @@ function login() {
     login();
   };
 
-  document.querySelector('#btnModeSignIn')?.addEventListener('click', switchToSignIn);
   document.querySelector('#linkToSignIn')?.addEventListener('click', switchToSignIn);
-  document.querySelector('#btnModeRegister')?.addEventListener('click', switchToRegister);
   document.querySelector('#linkToRegister')?.addEventListener('click', switchToRegister);
 
   // Role select listener
@@ -1629,16 +1617,14 @@ async function handleLogin(formEl) {
   const regdInput = f.elements['registration_number'] || document.querySelector('#regdNo');
   const roleSelect = f.elements['role'] || document.querySelector('#role');
   const pinInput = f.elements['pin'] || document.querySelector('#pin');
-  const verifInput = f.elements['verification'] || document.querySelector('#authVerification');
 
   const regdNo = String(regdInput?.value || '').trim();
   const role = String(roleSelect?.value || currentAuthRole || 'STUDENT').trim();
   const pin = String(pinInput?.value || '').trim();
-  const verification = String(verifInput?.value || '').trim();
   const isResp = role === 'RESPONDER';
 
   if (!isResp) {
-    // STUDENT LOGIN VALIDATION
+    // STUDENT LOGIN VALIDATION (Registration ID Only)
     if (!regdNo) {
       showLoginError('Please enter your Registration / ID No.');
       regdInput?.focus();
@@ -1658,11 +1644,6 @@ async function handleLogin(formEl) {
         regdInput.value = '';
         regdInput.focus();
       }
-      return;
-    }
-    if (!verification) {
-      showLoginError('Please enter your registered Full Name or Password.');
-      verifInput?.focus();
       return;
     }
   } else {
@@ -1724,7 +1705,7 @@ async function handleLogin(formEl) {
     console.log(`[SOS:Auth] Logging in as ${regdNo} with role: ${role}`);
     const loginPayload = isResp
       ? { regdNo, role, pin }
-      : { regdNo, role, verification };
+      : { regdNo, role };
 
     const res = await fetch(buildApiUrl('/api/auth/login'), {
       method: 'POST',
@@ -1808,13 +1789,6 @@ async function handleLogin(formEl) {
           pinInput.focus();
         }
       }
-    } else if (!isResp && !isNetwork) {
-      // For student: If invalid login details (401), clear ONLY the verification input:
-      if (err.status === 401 && verifInput) {
-        verifInput.value = '';
-        verifInput.focus();
-      }
-      // If 404 (Account not found), keep the registration number intact!
     }
 
     if (submitBtn) {
@@ -2114,6 +2088,9 @@ async function executeSosSubmission({ categoryId, description = '', building = '
 app.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (e.target.id === 'login') {
+    if (studentAuthMode === 'register' && currentAuthRole !== 'RESPONDER') {
+      return handleRegister(e.target);
+    }
     return handleLogin(e.target);
   }
   if (e.target.id === 'create-sos') {

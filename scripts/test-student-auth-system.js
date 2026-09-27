@@ -67,12 +67,11 @@ async function runStudentAuthTestSuite() {
   assert.equal(reg2.data.student.regdNo, student2Id);
   console.log('   ✓ PASS: Different student registered successfully with different ID.\n');
 
-  // 4. A registered student can sign in successfully
-  console.log('4. Testing Registered Student Sign-In...');
+  // 4. A registered student can sign in successfully using Registration ID only
+  console.log('4. Testing Registered Student Sign-In (Registration ID Only)...');
   const login1 = await api('/api/auth/login', 'POST', {
     regdNo: student1Id,
-    role: 'STUDENT',
-    verification: student1Name
+    role: 'STUDENT'
   });
   assert.equal(login1.status, 200, 'Registered student login must return 200 OK');
   assert.equal(login1.data.user.id, student1Id);
@@ -80,38 +79,34 @@ async function runStudentAuthTestSuite() {
   assert.equal(login1.data.user.role, 'STUDENT');
   assert.ok(login1.data.token, 'Token must be issued');
   const studentToken = login1.data.token;
-  console.log('   ✓ PASS: Registered student signed in successfully. Session token generated.\n');
+  console.log('   ✓ PASS: Registered student signed in successfully using Registration ID only.\n');
 
   // 5. An unregistered student cannot sign in
   console.log('5. Testing Unregistered Student Sign-In Rejection...');
   const loginUnreg = await api('/api/auth/login', 'POST', {
     regdNo: `UNREG-${Date.now()}`,
-    role: 'STUDENT',
-    verification: 'Non Existent'
+    role: 'STUDENT'
   });
   assert.equal(loginUnreg.status, 404, 'Unregistered student must return 404 Not Found');
-  assert.equal(loginUnreg.data.error, 'Account not found. Please register first.');
-  console.log('   ✓ PASS: Unregistered student blocked with "Account not found. Please register first."\n');
+  assert.equal(loginUnreg.data.error, 'Student not registered. Please register first.');
+  console.log('   ✓ PASS: Unregistered student blocked with "Student not registered. Please register first."\n');
 
-  // 6. Incorrect authentication details are rejected
-  console.log('6. Testing Incorrect Verification / Credentials Rejection...');
-  const loginBadCred = await api('/api/auth/login', 'POST', {
-    regdNo: student1Id,
-    role: 'STUDENT',
-    verification: 'Wrong Person'
+  // 6. Validation of Registration ID requirement and email prohibition
+  console.log('6. Testing Registration ID format validation during login...');
+  const loginEmpty = await api('/api/auth/login', 'POST', {
+    regdNo: '',
+    role: 'STUDENT'
   });
-  assert.equal(loginBadCred.status, 401, 'Wrong credentials must return 401 Unauthorized');
-  assert.equal(loginBadCred.data.error, 'Invalid login details. Please try again.');
+  assert.equal(loginEmpty.status, 400, 'Empty registration ID must return 400');
+  assert.equal(loginEmpty.data.error, 'Registration / ID No. is required.');
 
-  // Registration ID alone without verification
-  const loginNoCred = await api('/api/auth/login', 'POST', {
-    regdNo: student1Id,
-    role: 'STUDENT',
-    verification: ''
+  const loginEmail = await api('/api/auth/login', 'POST', {
+    regdNo: 'student@example.com',
+    role: 'STUDENT'
   });
-  assert.equal(loginNoCred.status, 401, 'Empty verification must return 401 Unauthorized');
-  assert.equal(loginNoCred.data.error, 'Invalid login details. Please try again.');
-  console.log('   ✓ PASS: Incorrect details rejected with "Invalid login details. Please try again."\n');
+  assert.equal(loginEmail.status, 400, 'Email address must return 400');
+  assert.ok(loginEmail.data.error.includes('Email addresses are not accepted'));
+  console.log('   ✓ PASS: Empty and invalid formats properly rejected during login.\n');
 
   // 7. Unauthenticated SOS submission blocked
   console.log('7. Testing Protection of SOS System (No Unauthenticated Submissions)...');

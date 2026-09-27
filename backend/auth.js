@@ -192,10 +192,9 @@ export async function registerStudent({ name, regdNo, password }) {
     };
 }
 
-export async function verifyStudentCredentials(regdNo, verification) {
+export async function verifyStudentCredentials(regdNo) {
     const rawId = String(regdNo || '').trim();
     const cleanId = normalizeRegdNo(rawId);
-    const cleanCred = String(verification || '').trim();
 
     if (!cleanId) {
         throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400 });
@@ -204,31 +203,10 @@ export async function verifyStudentCredentials(regdNo, verification) {
     const db = await getDb();
     const student = await db.collection('students').findOne({ regdNo: cleanId });
 
-    // Requirement: If student has not registered: "Account not found. Please register first."
+    // Requirement: Check whether the entered ID belongs to a registered student.
+    // If not registered, show: "Student not registered. Please register first."
     if (!student) {
-        throw Object.assign(new Error('Account not found. Please register first.'), { status: 404 });
-    }
-
-    // Requirement: Do not treat registration ID alone as password or proof of identity
-    if (!cleanCred) {
-        throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
-    }
-
-    // Check credential against registered password or registered full name
-    let verified = false;
-
-    // Check if matching password
-    if (student.passwordHash && verifyPassword(cleanCred, student.passwordHash)) {
-        verified = true;
-    }
-
-    // Check if matching registered student name (case-insensitive)
-    if (!verified && cleanCred.toLowerCase() === String(student.name || '').trim().toLowerCase()) {
-        verified = true;
-    }
-
-    if (!verified) {
-        throw Object.assign(new Error('Invalid login details. Please try again.'), { status: 401 });
+        throw Object.assign(new Error('Student not registered. Please register first.'), { status: 404 });
     }
 
     return {

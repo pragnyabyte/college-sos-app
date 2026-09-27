@@ -176,76 +176,38 @@ test('Student Registration: validates required fields, emails, and formats', asy
     );
 });
 
-test('Student Sign-In: authenticated successfully with registered ID and verification', async () => {
+test('Student Sign-In: authenticated successfully with registered Registration ID only', async () => {
     const testId = 'STU-AUTH-' + Math.floor(100000 + Math.random() * 900000);
     await registerStudent({ name: 'Rahul Sen', regdNo: testId });
 
-    // Sign in using registered Full Name as verification
-    const session = await verifyStudentCredentials(testId, 'Rahul Sen');
+    // Sign in using registered ID only (no verification needed)
+    const session = await verifyStudentCredentials(testId);
     assert.equal(session.id, testId);
     assert.equal(session.name, 'Rahul Sen');
     assert.equal(session.role, 'STUDENT');
 
-    // Case-insensitive name verification check
-    const sessionLower = await verifyStudentCredentials(testId.toLowerCase(), 'rahul sen');
+    // Case-insensitive ID check
+    const sessionLower = await verifyStudentCredentials(testId.toLowerCase());
     assert.equal(sessionLower.id, testId);
 });
 
-test('Student Sign-In: supports optional password authentication', async () => {
-    const testId = 'STU-PASS-' + Math.floor(100000 + Math.random() * 900000);
-    await registerStudent({ name: 'Sneha Patel', regdNo: testId, password: 'SecurePassword123!' });
-
-    // Sign in with password
-    const session = await verifyStudentCredentials(testId, 'SecurePassword123!');
-    assert.equal(session.id, testId);
-    assert.equal(session.name, 'Sneha Patel');
-
-    // Sign in with name also supported
-    const sessionByName = await verifyStudentCredentials(testId, 'Sneha Patel');
-    assert.equal(sessionByName.id, testId);
-
-    // Reject wrong password
+test('Student Sign-In: unregistered student cannot sign in (Student not registered. Please register first.)', async () => {
     await assert.rejects(
-        () => verifyStudentCredentials(testId, 'WrongPassword'),
-        (err) => {
-            assert.equal(err.status, 401);
-            assert.equal(err.message, 'Invalid login details. Please try again.');
-            return true;
-        }
-    );
-});
-
-test('Student Sign-In: unregistered student cannot sign in (Account not found)', async () => {
-    await assert.rejects(
-        () => verifyStudentCredentials('UNREGISTERED-ID-999', 'Any Name'),
+        () => verifyStudentCredentials('UNREGISTERED-ID-999'),
         (err) => {
             assert.equal(err.status, 404);
-            assert.equal(err.message, 'Account not found. Please register first.');
+            assert.equal(err.message, 'Student not registered. Please register first.');
             return true;
         }
     );
 });
 
-test('Student Sign-In: rejects incorrect credentials and empty verification', async () => {
-    const testId = 'STU-FAIL-' + Math.floor(100000 + Math.random() * 900000);
-    await registerStudent({ name: 'Ananya Roy', regdNo: testId });
-
-    // Wrong name/password
+test('Student Sign-In: rejects empty registration ID', async () => {
     await assert.rejects(
-        () => verifyStudentCredentials(testId, 'Wrong Name'),
+        () => verifyStudentCredentials(''),
         (err) => {
-            assert.equal(err.status, 401);
-            assert.equal(err.message, 'Invalid login details. Please try again.');
-            return true;
-        }
-    );
-
-    // Missing verification (registration ID alone is not enough)
-    await assert.rejects(
-        () => verifyStudentCredentials(testId, ''),
-        (err) => {
-            assert.equal(err.status, 401);
-            assert.equal(err.message, 'Invalid login details. Please try again.');
+            assert.equal(err.status, 400);
+            assert.equal(err.message, 'Registration / ID No. is required.');
             return true;
         }
     );
