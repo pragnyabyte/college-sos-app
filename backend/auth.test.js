@@ -176,24 +176,34 @@ test('Student Registration: validates required fields, emails, and formats', asy
     );
 });
 
-test('Student Sign-In: authenticated successfully with registered Registration ID only', async () => {
+test('Student Sign-In: authenticated successfully with registered Name and Registration ID', async () => {
     const testId = 'STU-AUTH-' + Math.floor(100000 + Math.random() * 900000);
     await registerStudent({ name: 'Rahul Sen', regdNo: testId });
 
-    // Sign in using registered ID only (no verification needed)
-    const session = await verifyStudentCredentials(testId);
+    // Sign in using registered ID and matching Full Name
+    const session = await verifyStudentCredentials(testId, 'Rahul Sen');
     assert.equal(session.id, testId);
     assert.equal(session.name, 'Rahul Sen');
     assert.equal(session.role, 'STUDENT');
 
-    // Case-insensitive ID check
-    const sessionLower = await verifyStudentCredentials(testId.toLowerCase());
+    // Case-insensitive name and ID check
+    const sessionLower = await verifyStudentCredentials(testId.toLowerCase(), 'rahul sen');
     assert.equal(sessionLower.id, testId);
+
+    // Mismatched name is rejected
+    await assert.rejects(
+        () => verifyStudentCredentials(testId, 'Wrong Person'),
+        (err) => {
+            assert.equal(err.status, 401);
+            assert.equal(err.message, 'Entered name does not match our records for this Registration ID.');
+            return true;
+        }
+    );
 });
 
 test('Student Sign-In: unregistered student cannot sign in (Student not registered. Please register first.)', async () => {
     await assert.rejects(
-        () => verifyStudentCredentials('UNREGISTERED-ID-999'),
+        () => verifyStudentCredentials('UNREGISTERED-ID-999', 'Any Name'),
         (err) => {
             assert.equal(err.status, 404);
             assert.equal(err.message, 'Student not registered. Please register first.');
@@ -204,7 +214,7 @@ test('Student Sign-In: unregistered student cannot sign in (Student not register
 
 test('Student Sign-In: rejects empty registration ID', async () => {
     await assert.rejects(
-        () => verifyStudentCredentials(''),
+        () => verifyStudentCredentials('', 'Some Name'),
         (err) => {
             assert.equal(err.status, 400);
             assert.equal(err.message, 'Registration / ID No. is required.');

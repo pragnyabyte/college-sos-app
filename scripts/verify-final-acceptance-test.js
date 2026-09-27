@@ -45,18 +45,20 @@ async function runAcceptanceVerification() {
   console.log('   ✓ PASS: Verification field, label, and validation are completely gone from code.\n');
 
   // -------------------------------------------------------------------------
-  // 2. VERIFY EXACT REQUIRED ELEMENTS ON STUDENT SIGN IN PAGE
+  // 2. VERIFY REQUIRED ELEMENTS ON STUDENT AND RESPONDER SIGN IN PAGES
   // -------------------------------------------------------------------------
-  console.log('2. Checking Required Elements on Student Sign In Page...');
+  console.log('2. Checking Required Elements on Student & Responder Sign In Pages...');
 
-  // 1. Heading
+  // 1. Heading & Subtitle
   assert.ok(appJs.includes("heading = 'Student Sign In'"), 'Must have Student Sign In heading');
-  // 2. Subtitle
   assert.ok(appJs.includes("subtitle = 'Enter your details to open your emergency response dashboard.'"), 'Must have exact subtitle');
-  // 3. Role dropdown
+  // 2. Role dropdown
   assert.ok(appJs.includes('<select name="role" id="role" required>'), 'Must have Role dropdown');
   assert.ok(appJs.includes('<option value="STUDENT"'), 'Must have Student option');
   assert.ok(appJs.includes('<option value="RESPONDER"'), 'Must have Emergency Responder option');
+  // 3. Full Name label and input for Student
+  assert.ok(appJs.includes('id="studentName"'), 'Must have Full Name input for Student');
+  assert.ok(appJs.includes('placeholder="Enter Full Name"'), 'Must have Full Name placeholder');
   // 4. Registration ID label and input
   assert.ok(appJs.includes('<label>Registration ID <span class="reqTag">*</span>'), 'Must have Registration ID label');
   assert.ok(appJs.includes('name="registration_number" id="regdNo"'), 'Must have Registration ID input');
@@ -65,7 +67,9 @@ async function runAcceptanceVerification() {
   assert.ok(appJs.includes('<button class="primary" type="submit" id="open-dashboard-btn">Sign In →</button>'), 'Must have Sign In button');
   // 6. One small link below button: "New student? Register here"
   assert.ok(appJs.includes('<p class="authSwitchText">New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a></p>'), 'Must have exact single link below button');
-  console.log('   ✓ PASS: All 6 required elements are present in exact form.\n');
+  // 7. Full Name on Responder login form
+  assert.ok(appJs.includes('id="respName"'), 'Must have Full Name input on Responder login form');
+  console.log('   ✓ PASS: Full Name input fields present and correctly positioned on both forms.\n');
 
   // -------------------------------------------------------------------------
   // 3. VERIFY REGISTRATION NAVIGATION & FUNCTIONALITY
@@ -80,11 +84,12 @@ async function runAcceptanceVerification() {
   // -------------------------------------------------------------------------
   // 4. VERIFY LOGIN FUNCTIONALITY VIA LIVE API
   // -------------------------------------------------------------------------
-  console.log('4. Testing Student Login API with Registration ID Only...');
+  console.log('4. Testing Student Login API with Full Name and Registration ID...');
 
   // A. Unregistered student login rejection
   const unregId = `STU-UNREG-${Date.now()}`;
   const unregRes = await api('/api/auth/login', 'POST', {
+    name: 'Unregistered User',
     regdNo: unregId,
     role: 'STUDENT'
   });
@@ -102,12 +107,27 @@ async function runAcceptanceVerification() {
   assert.equal(regRes.status, 201, 'Student registration must succeed with 201');
   console.log('   ✓ PASS: New student registered successfully.');
 
-  // C. Sign in with Registration ID ONLY (no name, no password, no verification)
+  // C. Sign in with Full Name and Registration ID
   const loginRes = await api('/api/auth/login', 'POST', {
+    name: testStudentName,
     regdNo: testStudentId,
     role: 'STUDENT'
   });
-  assert.equal(loginRes.status, 200, 'Student login with ID only must return 200');
+  assert.equal(loginRes.status, 200, 'Student login with Name and ID must return 200');
+  assert.equal(loginRes.data.user.id, testStudentId);
+  assert.equal(loginRes.data.user.name, testStudentName);
+  assert.equal(loginRes.data.user.role, 'STUDENT');
+  assert.ok(loginRes.data.token, 'Token must be issued');
+  console.log('   ✓ PASS: Student successfully logged in with Full Name and Registration ID.');
+
+  // D. Mismatched name is rejected
+  const mismatchRes = await api('/api/auth/login', 'POST', {
+    name: 'Different Name',
+    regdNo: testStudentId,
+    role: 'STUDENT'
+  });
+  assert.equal(mismatchRes.status, 401, 'Mismatched student name must return 401');
+  console.log('   ✓ PASS: Mismatched name properly rejected with 401.');
   assert.equal(loginRes.data.user.id, testStudentId);
   assert.equal(loginRes.data.user.name, testStudentName);
   assert.equal(loginRes.data.user.role, 'STUDENT');

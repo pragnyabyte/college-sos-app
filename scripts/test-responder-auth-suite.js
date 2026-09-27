@@ -119,7 +119,7 @@ async function runTestSuite() {
   const resStu = await req('/api/auth/login', 'POST', {
     regdNo: stuReg,
     role: 'STUDENT',
-    verification: 'Rahul Sharma'
+    name: 'Rahul Sharma'
   });
   assert.equal(resStu.status, 200, 'Student login must return 200');
   assert.equal(resStu.data.user.role, 'STUDENT');

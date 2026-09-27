@@ -853,6 +853,7 @@ function clearLoginError() {
 let currentAuthRole = 'STUDENT';
 let studentAuthMode = 'signin';
 let savedRegdForSignIn = '';
+let savedNameForSignIn = '';
 
 function showLoginSuccess(msg) {
   state.error = '';
@@ -936,15 +937,19 @@ async function handleRegister(formEl) {
       throw err;
     }
 
-    // Success: Redirect to sign-in page, prefill registration ID, show success message
+    // Success: Redirect to sign-in page, prefill registration ID and name, show success message
     studentAuthMode = 'signin';
     savedRegdForSignIn = regdNo;
+    savedNameForSignIn = name;
     login();
     showLoginSuccess('Registration successful! You can now sign in.');
     const newRegd = document.querySelector('#regdNo');
     if (newRegd) {
       newRegd.value = regdNo;
-      newRegd.focus();
+    }
+    const studentNameInput = document.querySelector('#studentName');
+    if (studentNameInput) {
+      studentNameInput.value = name;
     }
   } catch (err) {
     showLoginError(err.message || 'Registration failed.');
@@ -1015,7 +1020,10 @@ function login() {
         <button class="primary" type="submit" id="btn-register-submit">Register →</button>
         <p class="authSwitchText">Already registered? <a href="#" id="linkToSignIn" class="authSwitchLink">Sign In</a></p>
       ` : (!isResp ? `
-        <!-- EXISTING STUDENT SIGN-IN (Registration ID Only) -->
+        <!-- EXISTING STUDENT SIGN-IN -->
+        <label>Full Name <span class="reqTag">*</span>
+          <input required type="text" name="name" id="studentName" value="${esc(savedNameForSignIn || '')}" placeholder="Enter Full Name" autocomplete="name" enterkeyhint="next">
+        </label>
         <label>Registration ID <span class="reqTag">*</span>
           <input required type="text" name="registration_number" id="regdNo" value="${esc(savedRegdForSignIn)}" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, or Student ID (e.g. 2024CS001, STU-001). Email addresses are not accepted." enterkeyhint="done">
         </label>
@@ -1023,6 +1031,9 @@ function login() {
         <p class="authSwitchText">New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a></p>
       ` : `
         <!-- RESPONDER LOGIN -->
+        <label>Full Name
+          <input type="text" name="name" id="respName" value="" placeholder="Enter Full Name" autocomplete="name" enterkeyhint="next">
+        </label>
         <label>Registration / ID No. <span class="reqTag">*</span>
           <input required type="text" name="registration_number" id="regdNo" value="" placeholder="Enter Registration / ID No." autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other" readonly onfocus="this.removeAttribute('readonly')" pattern="^[A-Za-z0-9_\\-\\.\\/]{2,50}$" title="Please enter a valid Registration Number, Roll Number, Student ID, or Employee ID (e.g. 2024CS001, STU-001, EMP-101). Email addresses are not accepted." enterkeyhint="next">
         </label>
@@ -1054,6 +1065,8 @@ function login() {
     studentAuthMode = 'signin';
     const entered = document.querySelector('#regRegdNo')?.value || document.querySelector('#regdNo')?.value;
     if (entered) savedRegdForSignIn = entered;
+    const enteredName = document.querySelector('#regName')?.value || document.querySelector('#studentName')?.value;
+    if (enteredName) savedNameForSignIn = enteredName;
     login();
   };
   const switchToRegister = (e) => {
@@ -1062,6 +1075,8 @@ function login() {
     studentAuthMode = 'register';
     const entered = document.querySelector('#regdNo')?.value || document.querySelector('#regRegdNo')?.value;
     if (entered) savedRegdForSignIn = entered;
+    const enteredName = document.querySelector('#studentName')?.value || document.querySelector('#regName')?.value;
+    if (enteredName) savedNameForSignIn = enteredName;
     login();
   };
 
@@ -1614,17 +1629,24 @@ async function loadStats() {
 async function handleLogin(formEl) {
   const f = formEl || document.querySelector('#login');
   if (!f) return;
+  const nameInput = f.elements['name'] || document.querySelector('#studentName') || document.querySelector('#respName');
   const regdInput = f.elements['registration_number'] || document.querySelector('#regdNo');
   const roleSelect = f.elements['role'] || document.querySelector('#role');
   const pinInput = f.elements['pin'] || document.querySelector('#pin');
 
+  const name = String(nameInput?.value || '').trim();
   const regdNo = String(regdInput?.value || '').trim();
   const role = String(roleSelect?.value || currentAuthRole || 'STUDENT').trim();
   const pin = String(pinInput?.value || '').trim();
   const isResp = role === 'RESPONDER';
 
   if (!isResp) {
-    // STUDENT LOGIN VALIDATION (Registration ID Only)
+    // STUDENT LOGIN VALIDATION (Full Name and Registration ID)
+    if (!name) {
+      showLoginError('Please enter your Full Name.');
+      nameInput?.focus();
+      return;
+    }
     if (!regdNo) {
       showLoginError('Please enter your Registration / ID No.');
       regdInput?.focus();
@@ -1704,8 +1726,8 @@ async function handleLogin(formEl) {
   try {
     console.log(`[SOS:Auth] Logging in as ${regdNo} with role: ${role}`);
     const loginPayload = isResp
-      ? { regdNo, role, pin }
-      : { regdNo, role };
+      ? { regdNo, role, pin, name }
+      : { regdNo, role, name };
 
     const res = await fetch(buildApiUrl('/api/auth/login'), {
       method: 'POST',
@@ -1787,6 +1809,13 @@ async function handleLogin(formEl) {
         if (pinInput) {
           pinInput.value = '';
           pinInput.focus();
+        }
+      }
+    } else if (!isResp && !isNetwork) {
+      if (err.field === 'name' || msg.toLowerCase().includes('name')) {
+        if (nameInput) {
+          nameInput.value = '';
+          nameInput.focus();
         }
       }
     }

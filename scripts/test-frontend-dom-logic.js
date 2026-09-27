@@ -57,8 +57,8 @@ assert.ok(appJs.includes("u.id === 'RESP-1111'"), 'isResponderUser must recogniz
 assert.ok(!appJs.includes("u.id === '250131'"), 'isResponderUser must NOT have hardcoded 250131');
 console.log('   ✓ PASS: isResponderUser properly identifies RESP-1111.\n');
 
-// 5. Verify Student Sign-In UI Elements and Removal of Duplicate Row / Verification Field
-console.log('5. Checking Student Sign-In UI structure and unwanted element removal...');
+// 5. Verify Student Sign-In UI Elements, Full Name Field, and Removal of Duplicate Row
+console.log('5. Checking Student & Responder Sign-In UI structure with Name fields...');
 assert.ok(!appJs.includes('authModeSwitcher'), 'Must NOT have authModeSwitcher container');
 assert.ok(!appJs.includes('btnModeSignIn'), 'Must NOT have Already Registered? Sign In button');
 assert.ok(!appJs.includes('btnModeRegister'), 'Must NOT have New Student? Register button');
@@ -66,6 +66,8 @@ assert.ok(!appJs.includes('authVerification'), 'Must NOT have authVerification f
 assert.ok(!appJs.includes('Verification (Full Name or Password)'), 'Must NOT have verification label');
 assert.ok(appJs.includes('Student Sign In'), 'Must have Student Sign In heading');
 assert.ok(appJs.includes('Enter your details to open your emergency response dashboard.'), 'Must have subtitle');
+assert.ok(appJs.includes('id="studentName"'), 'Must have studentName input field');
+assert.ok(appJs.includes('id="respName"'), 'Must have respName input field for responders');
 assert.ok(appJs.includes('open-dashboard-btn'), 'Must have Sign In button');
 assert.ok(appJs.includes('linkToRegister'), 'Must have linkToRegister link below Sign In');
 assert.ok(appJs.includes('New student? <a href="#" id="linkToRegister" class="authSwitchLink">Register here</a>'), 'Must have single register here link');
@@ -73,7 +75,7 @@ assert.ok(appJs.includes('handleRegister'), 'Must retain handleRegister function
 assert.ok(appJs.includes('New Student Registration'), 'Must retain New Student Registration heading for register view');
 assert.ok(appJs.includes('/api/auth/register'), 'Must call /api/auth/register endpoint');
 assert.ok(appJs.includes('Registration successful! You can now sign in.'), 'Must show success message on registration');
-console.log('   ✓ PASS: Unwanted row and verification field permanently removed; required elements confirmed.\n');
+console.log('   ✓ PASS: Full Name fields correctly added to both Student and Responder forms.\n');
 
 // 6. Verify Anti-Autofill and Reload Protection
 console.log('6. Checking Autofill and Stale Session Protection...');

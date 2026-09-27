@@ -192,9 +192,10 @@ export async function registerStudent({ name, regdNo, password }) {
     };
 }
 
-export async function verifyStudentCredentials(regdNo) {
+export async function verifyStudentCredentials(regdNo, enteredName = null) {
     const rawId = String(regdNo || '').trim();
     const cleanId = normalizeRegdNo(rawId);
+    const cleanName = String(enteredName || '').trim();
 
     if (!cleanId) {
         throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400 });
@@ -207,6 +208,13 @@ export async function verifyStudentCredentials(regdNo) {
     // If not registered, show: "Student not registered. Please register first."
     if (!student) {
         throw Object.assign(new Error('Student not registered. Please register first.'), { status: 404 });
+    }
+
+    // If entered name is provided, validate/match it against registered name (case-insensitive)
+    if (cleanName && student.name) {
+        if (cleanName.toLowerCase() !== String(student.name).trim().toLowerCase()) {
+            throw Object.assign(new Error('Entered name does not match our records for this Registration ID.'), { status: 401, field: 'name' });
+        }
     }
 
     return {

@@ -67,9 +67,10 @@ async function runStudentAuthTestSuite() {
   assert.equal(reg2.data.student.regdNo, student2Id);
   console.log('   ✓ PASS: Different student registered successfully with different ID.\n');
 
-  // 4. A registered student can sign in successfully using Registration ID only
-  console.log('4. Testing Registered Student Sign-In (Registration ID Only)...');
+  // 4. A registered student can sign in successfully using Name and Registration ID
+  console.log('4. Testing Registered Student Sign-In (Name and Registration ID)...');
   const login1 = await api('/api/auth/login', 'POST', {
+    name: student1Name,
     regdNo: student1Id,
     role: 'STUDENT'
   });
@@ -79,7 +80,18 @@ async function runStudentAuthTestSuite() {
   assert.equal(login1.data.user.role, 'STUDENT');
   assert.ok(login1.data.token, 'Token must be issued');
   const studentToken = login1.data.token;
-  console.log('   ✓ PASS: Registered student signed in successfully using Registration ID only.\n');
+  console.log('   ✓ PASS: Registered student signed in successfully using Name and Registration ID.\n');
+
+  // 4b. Student sign-in rejects mismatched name
+  console.log('4b. Testing Mismatched Student Name Rejection...');
+  const loginMismatch = await api('/api/auth/login', 'POST', {
+    name: 'Wrong Student Name',
+    regdNo: student1Id,
+    role: 'STUDENT'
+  });
+  assert.equal(loginMismatch.status, 401, 'Mismatched student name must return 401');
+  assert.equal(loginMismatch.data.error, 'Entered name does not match our records for this Registration ID.');
+  console.log('   ✓ PASS: Mismatched name correctly rejected.\n');
 
   // 5. An unregistered student cannot sign in
   console.log('5. Testing Unregistered Student Sign-In Rejection...');
