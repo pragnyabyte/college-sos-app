@@ -1047,29 +1047,25 @@ function confirm(c) {
     <p class="eyebrow danger">CONFIRM ${esc(c.name.toUpperCase())}</p>
     <h1>Are you sure you want to send an SOS?</h1>
     <p>This will immediately alert <b>${labels[c.primaryDepartmentId]}</b> and dispatch an emergency alert to active emergency responders with your automatic live GPS location.</p>
-    <form id="create-sos" data-id="${c.id}">
-      <div class="oneClickNotice">
-        <span class="oneClickBadge">⚡ ONE-CLICK SOS</span>
-        <span>Click <b>Send SOS now</b> below. Your live GPS coordinates will be captured and sent automatically. Location fields are completely optional.</span>
-      </div>
-      <label>What is happening? <span class="optTag">Optional</span>
+    <form id="create-sos" data-id="${c.id}" novalidate>
+      <label>What is happening? <span class="optTag">(Optional)</span>
         <textarea name="description" maxlength="1000" placeholder="Briefly describe what happened, if you can."></textarea>
       </label>
       <div class="gpsStatusIndicator" id="gps-status-indicator">
-        <button type="button" class="locationBtn" data-action="gps">⌖ <span id="gps-status-label">${gpsStatusText}</span></button>
+        <button type="button" class="locationBtn" data-action="gps" id="gps-status-btn"><span id="gps-status-label">${gpsStatusText}</span></button>
       </div>
       <div class="formGrid">
-        <label>Building <span class="optTag">Optional</span>
-          <input name="building" placeholder="e.g. Block A (optional)">
+        <label>Building <span class="reqTag">(Required)</span>
+          <input name="building" id="sos-building" placeholder="e.g. Block A" autocomplete="off">
         </label>
-        <label>Floor <span class="optTag">Optional</span>
-          <input name="floor" placeholder="e.g. 2nd Floor (optional)">
+        <label>Floor <span class="reqTag">(Required)</span>
+          <input name="floor" id="sos-floor" placeholder="e.g. 2nd Floor" autocomplete="off">
         </label>
-        <label>Room / area <span class="optTag">Optional</span>
-          <input name="room" placeholder="e.g. Room 204 (optional)">
+        <label>Room / area <span class="reqTag">(Required)</span>
+          <input name="room" id="sos-room" placeholder="e.g. Room 204" autocomplete="off">
         </label>
       </div>
-      <div id="sos-submit-error" class="sosSubmitError" style="display:none"></div>
+      <div id="sos-submit-error" class="sosSubmitError" style="display:none" role="alert"></div>
       <div class="actions">
         <button type="button" class="secondary" data-action="back-create">Cancel</button>
         <button class="sosButton" id="btn-submit-sos">Send SOS now</button>
@@ -1966,16 +1962,78 @@ app.addEventListener('submit', async (e) => {
     return handleLogin(e.target);
   }
   if (e.target.id === 'create-sos') {
-    const f = new FormData(e.target);
-    const submitBtn = e.target.querySelector('#btn-submit-sos') || e.target.querySelector('.sosButton');
-    const errorEl = e.target.querySelector('#sos-submit-error');
+    const form = e.target;
+    const f = new FormData(form);
+    const submitBtn = form.querySelector('#btn-submit-sos') || form.querySelector('.sosButton');
+    const errorEl = form.querySelector('#sos-submit-error');
+
+    const bldgInput = form.querySelector('[name="building"]');
+    const flrInput = form.querySelector('[name="floor"]');
+    const rmInput = form.querySelector('[name="room"]');
+
+    const buildingVal = (f.get('building') || '').trim();
+    const floorVal = (f.get('floor') || '').trim();
+    const roomVal = (f.get('room') || '').trim();
+
+    const missing = [];
+    if (!buildingVal) {
+      missing.push('Building');
+      bldgInput?.classList.add('inputError');
+    } else {
+      bldgInput?.classList.remove('inputError');
+    }
+
+    if (!floorVal) {
+      missing.push('Floor');
+      flrInput?.classList.add('inputError');
+    } else {
+      flrInput?.classList.remove('inputError');
+    }
+
+    if (!roomVal) {
+      missing.push('Room / area');
+      rmInput?.classList.add('inputError');
+    } else {
+      rmInput?.classList.remove('inputError');
+    }
+
+    if (missing.length > 0) {
+      if (errorEl) {
+        let msg = '';
+        if (missing.length === 3) {
+          msg = '⚠️ Please fill in all required location fields: Building, Floor, and Room / area.';
+        } else if (missing.length === 2) {
+          msg = `⚠️ Please fill in the required location fields: ${missing.join(' and ')}.`;
+        } else {
+          msg = `⚠️ Please fill in the required location field: ${missing[0]}.`;
+        }
+        errorEl.textContent = msg;
+        errorEl.style.display = 'block';
+      }
+
+      // Move focus to first missing field
+      if (!buildingVal && bldgInput) {
+        bldgInput.focus();
+      } else if (!floorVal && flrInput) {
+        flrInput.focus();
+      } else if (!roomVal && rmInput) {
+        rmInput.focus();
+      }
+      return;
+    }
+
+    // Clear any previous error
+    if (errorEl) {
+      errorEl.style.display = 'none';
+      errorEl.textContent = '';
+    }
 
     await executeSosSubmission({
-      categoryId: e.target.dataset.id,
+      categoryId: form.dataset.id,
       description: f.get('description'),
-      building: f.get('building'),
-      floor: f.get('floor'),
-      room: f.get('room'),
+      building: buildingVal,
+      floor: floorVal,
+      room: roomVal,
       submitBtnEl: submitBtn,
       errorEl
     });
@@ -2268,14 +2326,9 @@ document.addEventListener('click', async (e) => {
 
   // Instant One-Click SOS triggered from hero banner
   if (a === 'instant-one-click-sos') {
-    const heroBtn = el;
-    heroBtn.disabled = true;
-    heroBtn.innerHTML = '<span class="btnSpinner"></span> Getting your current GPS location...';
-    await executeSosSubmission({
-      categoryId: 'other',
-      description: 'One-Click Emergency Alert',
-      submitBtnEl: heroBtn
-    });
+    app.innerHTML = shell(confirm(category('other') || state.categories[0]));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
   }
 
   if (a === 'gps') {
@@ -2405,8 +2458,18 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-// Search input delegation
+// Search and form input delegation
 app.addEventListener('input', (e) => {
+  if (['building', 'floor', 'room'].includes(e.target.name)) {
+    if (e.target.value.trim()) {
+      e.target.classList.remove('inputError');
+      const form = e.target.closest('#create-sos');
+      if (form && !form.querySelector('.inputError')) {
+        const err = form.querySelector('#sos-submit-error');
+        if (err) err.style.display = 'none';
+      }
+    }
+  }
   if (e.target.id === 'search' || e.target.id === 'status-filter') {
     const q = document.querySelector('#search')?.value.toLowerCase() || '', s = document.querySelector('#status-filter')?.value || '';
     document.querySelectorAll('.incident').forEach(x => x.hidden = !(x.dataset.search.includes(q) && (!s || x.dataset.status === s)));
