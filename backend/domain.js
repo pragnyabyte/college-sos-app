@@ -26,9 +26,13 @@ export function validateLocation(v) {
     if (room.length > 100) throw new Error('Room name is too long');
     if (area.length > 100) throw new Error('Area name is too long');
 
-    const lat = (v.latitude == null || v.latitude === '') ? null : Number(v.latitude);
-    const lng = (v.longitude == null || v.longitude === '') ? null : Number(v.longitude);
-    const accuracy = (v.accuracy == null || v.accuracy === '') ? null : Number(v.accuracy);
+    const rawLat = (v.latitude != null && v.latitude !== '') ? v.latitude : ((v.lat != null && v.lat !== '') ? v.lat : null);
+    const rawLng = (v.longitude != null && v.longitude !== '') ? v.longitude : ((v.lng != null && v.lng !== '') ? v.lng : null);
+    const rawAcc = (v.accuracy != null && v.accuracy !== '') ? v.accuracy : ((v.acc != null && v.acc !== '') ? v.acc : null);
+
+    const lat = rawLat == null ? null : Number(rawLat);
+    const lng = rawLng == null ? null : Number(rawLng);
+    const accuracy = rawAcc == null ? null : Number(rawAcc);
 
     if (lat !== null && (!Number.isFinite(lat) || lat < -90 || lat > 90))
         throw new Error('Invalid GPS coordinates');

@@ -40,6 +40,25 @@ export function getWebSocketUrl() {
   return `${scheme}://${location.host}/ws`;
 }
 
+/**
+ * TASK 3: Builds the exact, official Google Maps Universal URL Scheme directly from coordinates:
+ * https://www.google.com/maps/search/?api=1&query=LATITUDE,LONGITUDE
+ * Replaces LATITUDE and LONGITUDE with actual numeric values from the successful GPS result.
+ * Never uses place names, responder location, or default map centers.
+ * Safely URL-encodes coordinates for Android phones, iOS, and desktop browsers.
+ */
+export function buildGoogleMapsUrl(latitude, longitude) {
+  if (latitude == null || longitude == null || latitude === '' || longitude === '') {
+    return null;
+  }
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`;
+}
+
 const app = document.querySelector('#app');
 
 const defaultCategories = [
@@ -783,7 +802,7 @@ function shell(content) {
     </header>
     <div class="connectivityStrip" role="status" aria-live="polite">
       <span class="statusDot ${state.isOnline ? 'dotOnline' : 'dotOffline'}"></span>
-      <span class="statusLabel">${state.isOnline ? '🟢 Live Online' : '🔴 Offline (Disconnected)'}</span>
+      <span class="statusLabel">${state.isOnline ? 'Live Online' : 'Offline (Disconnected)'}</span>
       ${state.lastSyncTime ? `<span class="syncLabel">Last synced: ${esc(state.lastSyncTime)}</span>` : ''}
       ${(typeof getPendingSosQueue === 'function' && getPendingSosQueue().length > 0) ? `<span class="pendingQueuePill">⚠️ ${getPendingSosQueue().length} Queued Offline</span>` : ''}
     </div>
@@ -981,35 +1000,46 @@ function login() {
 }
 
 function create() {
-  return `<section class="hero">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+  const isInsecureContext = typeof window !== 'undefined' && window.isSecureContext === false;
+  const insecureWarning = isInsecureContext ? `
+    <div class="insecureWarningBanner" role="alert">
+      <span style="font-size:18px">⚠️</span>
       <div>
-        <p class="eyebrow danger">STUDENT DASHBOARD</p>
-        <h1>Emergency SOS</h1>
-        <p>Send an emergency SOS with automatic live location in one click, or select a category below.</p>
-      </div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-        <button class="btnOneClickSosHero" data-action="instant-one-click-sos" title="Send emergency SOS immediately with automatic live GPS location">
-          🚨 Send SOS Now
-        </button>
-        <button class="btnTestDrillStudent" data-action="student-test-drill" title="Trigger instant test drill to responder">
-          ⚡ Test Drill
-        </button>
+        <b>Insecure Context (HTTP over IP) Notice:</b>
+        Mobile browsers (Chrome / Safari) disable device GPS unless running on <b>HTTPS</b> or <b>localhost</b>.
+        For live GPS on phones, use the HTTPS link or enable Chrome flag <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>.
       </div>
     </div>
-  </section>
-  <div class="categoryGrid">${state.categories.map(c => `<button class="category" data-category="${c.id}"><span class="catIcon">${c.icon}</span><span><b>${esc(c.name)}</b><small>${c.examples.slice(0, 3).map(esc).join(' · ')}</small></span><span class="priority ${c.priority.toLowerCase()}">${c.priority}</span><i>→</i></button>`).join('')}</div>
-  <div class="privacy">Your live GPS location is automatically captured and routed to campus emergency responders.</div>`;
+  ` : '';
+
+  return `
+    ${insecureWarning}
+    <section class="hero">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+        <div>
+          <p class="eyebrow danger">STUDENT DASHBOARD</p>
+          <h1>Emergency SOS</h1>
+          <p>Send an emergency SOS with automatic live location in one click, or select a category below.</p>
+        </div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+          <button class="btnOneClickSosHero" data-action="instant-one-click-sos" title="Send emergency SOS immediately with automatic live GPS location">
+            🚨 Send SOS Now
+          </button>
+        </div>
+      </div>
+    </section>
+    <div class="categoryGrid">${state.categories.map(c => `<button class="category" data-category="${c.id}"><span class="catIcon">${c.icon}</span><span><b>${esc(c.name)}</b><small>${c.examples.slice(0, 3).map(esc).join(' · ')}</small></span><span class="priority ${c.priority.toLowerCase()}">${c.priority}</span><i>→</i></button>`).join('')}</div>
+    <div class="privacy">Your live GPS location is automatically captured and routed to campus emergency responders.</div>`;
 }
 
 function confirm(c) {
   const gpsStatusText = gps?.latitude != null
     ? `📍 Live GPS captured (±${Math.round(gps.accuracy || 0)}m)`
     : (gps?.locationStatus === 'permission_denied'
-      ? `⚠️ GPS permission denied — will send alert immediately`
-      : (gps?.locationStatus === 'unavailable'
-        ? `⚠️ GPS unavailable — will send alert immediately`
-        : `⌖ Live GPS will be automatically captured on click`));
+      ? `⚠️ GPS permission denied — alert will send without GPS`
+      : (gps?.locationStatus === 'timeout'
+        ? `⚠️ GPS timed out — alert will send without GPS`
+        : `⌖ Live GPS will be automatically captured when you click Send SOS now`));
 
   return `<section class="panel confirm">
     <button class="back" data-action="back-create">← Back to categories</button>
@@ -1058,17 +1088,19 @@ function active(i) {
   const hasGps = i.location?.latitude != null && i.location?.longitude != null;
   const lat = hasGps ? Number(i.location.latitude) : null;
   const lng = hasGps ? Number(i.location.longitude) : null;
-  const acc = hasGps && i.location?.accuracy != null ? Math.round(i.location.accuracy) : null;
+  const acc = hasGps && i.location?.accuracy != null ? Math.round(Number(i.location.accuracy)) : null;
+  const mapsUrl = hasGps ? buildGoogleMapsUrl(lat, lng) : null;
+  const gpsTimestamp = i.location?.gpsTimestamp || i.location?.gps_timestamp || null;
 
   let locDisplay = '';
   if (manualLocation && hasGps) {
-    locDisplay = `⌖ ${esc(manualLocation)} · GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc}m)`;
+    locDisplay = `⌖ ${esc(manualLocation)} · 📍 GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})`;
   } else if (manualLocation) {
-    locDisplay = `⌖ ${esc(manualLocation)}`;
+    locDisplay = `⌖ ${esc(manualLocation)} · <span class="badgeGpsUnavail">Location not available</span>`;
   } else if (hasGps) {
-    locDisplay = `⌖ Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc}m)`;
+    locDisplay = `⌖ Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})`;
   } else {
-    locDisplay = `⌖ Location: Not provided`;
+    locDisplay = `⌖ <span class="badgeGpsUnavail">Location not available</span>`;
   }
 
   if (i.status === 'QUEUED_OFFLINE') {
@@ -1104,7 +1136,16 @@ function active(i) {
       <h1>${esc(c?.name || 'Emergency')}</h1>
       <p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p>
       <div class="location">${locDisplay}</div>
-      ${hasGps ? `<div style="margin-top:8px"><a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener noreferrer" class="btnMapsLink">📍 View my location on Google Maps</a></div>` : ''}
+      ${hasGps && mapsUrl ? `
+        <div style="margin-top:10px">
+          <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btnMapsLink">📍 View my location on Google Maps</a>
+          ${acc != null && acc > 100 ? `
+            <div style="margin-top:6px;background:#fef3c7;color:#92400e;padding:6px 10px;border-radius:6px;font-size:13px;display:inline-block;">
+              ⚠️ GPS accuracy is approximately ${acc} m. Move to an open area and retry if safe.
+            </div>
+          ` : ''}
+        </div>
+      ` : ''}
     </section>
 
     ${!hasGps ? `
@@ -1237,16 +1278,18 @@ function cards(items) {
     const hasGps = i.location?.latitude != null && i.location?.longitude != null;
     const lat = hasGps ? Number(i.location.latitude) : null;
     const lng = hasGps ? Number(i.location.longitude) : null;
-    const acc = hasGps && i.location?.accuracy != null ? Math.round(i.location.accuracy) : null;
+    const acc = hasGps && i.location?.accuracy != null ? Math.round(Number(i.location.accuracy)) : null;
+    const mapsUrl = hasGps ? buildGoogleMapsUrl(lat, lng) : null;
 
     let locSnippet = '';
-    if (manualLocation) {
-      locSnippet = esc(manualLocation);
-      if (hasGps) locSnippet += ` <span class="badgeGpsActive">📍 GPS</span>`;
+    if (manualLocation && hasGps) {
+      locSnippet = `${esc(manualLocation)} <span class="badgeGpsActive">📍 GPS (±${acc != null ? acc + 'm' : 'N/A'})</span>`;
+    } else if (manualLocation) {
+      locSnippet = `${esc(manualLocation)} · <span class="badgeGpsUnavail">Location not available</span>`;
     } else if (hasGps) {
-      locSnippet = `📍 GPS ${lat.toFixed(4)}, ${lng.toFixed(4)} (±${acc}m)`;
+      locSnippet = `📍 GPS ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})`;
     } else {
-      locSnippet = `<span class="badgeGpsUnavail">⚠️ GPS unavailable (Not provided)</span>`;
+      locSnippet = `<span class="badgeGpsUnavail">Location not available</span>`;
     }
 
     return `<article class="incident ${i.priority.toLowerCase()} ${state.selected?.id === i.id ? 'highlighted' : ''}" data-search="${esc(`${i.id} ${i.student_id} ${i.student_name}`.toLowerCase())}" data-status="${i.status}">
@@ -1265,6 +1308,7 @@ function cards(items) {
       <div class="cardFoot">
         ${status(i.status)}
         <div class="cardFootActions">
+          ${mapsUrl ? `<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btnCardMapsLink" title="Open exact coordinates in Google Maps" onclick="event.stopPropagation()">📍 View Exact Location</a>` : ''}
           ${canDelete ? `<button type="button" class="btnDeleteCardSecondary" data-delete-sos="${esc(i.id)}" data-delete-mongoid="${esc(i._id || '')}" title="Delete this SOS alert">🗑 Delete</button>` : ''}
           <button data-incident="${i.id}">Open →</button>
         </div>
@@ -1290,7 +1334,9 @@ function details(i) {
   const hasGps = i.location?.latitude != null && i.location?.longitude != null;
   const lat = hasGps ? Number(i.location.latitude) : null;
   const lng = hasGps ? Number(i.location.longitude) : null;
-  const acc = hasGps && i.location?.accuracy != null ? Math.round(i.location.accuracy) : null;
+  const acc = hasGps && i.location?.accuracy != null ? Math.round(Number(i.location.accuracy)) : null;
+  const mapsUrl = hasGps ? buildGoogleMapsUrl(lat, lng) : null;
+  const gpsTimestamp = i.location?.gpsTimestamp || i.location?.gps_timestamp || null;
 
   return `<section class="details">
     <button class="back" data-action="close-details">← Back</button>
@@ -1331,19 +1377,24 @@ function details(i) {
           <div><dt>Room / Area</dt><dd>${esc(rm)}</dd></div>
         </dl>
 
-        ${hasGps ? `
+        ${hasGps && mapsUrl ? `
           <div class="gpsLocationBox" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;margin-bottom:16px;">
             <div class="gpsHeader" style="display:flex;align-items:flex-start;gap:12px;">
               <span class="gpsIcon" style="font-size:24px">📍</span>
               <div style="flex:1">
-                <b style="font-size:15px;display:block;color:#166534">Live GPS Coordinates</b>
-                <div style="font-family:monospace;font-size:15px;color:#0f172a;margin:2px 0;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
-                <small style="color:#475569">Accuracy: ±${acc != null ? acc + 'm' : 'N/A'}${i.location.gpsTimestamp ? ` · Recorded: ${new Date(i.location.gpsTimestamp).toLocaleTimeString()}` : ''}</small>
+                <b style="font-size:15px;display:block;color:#166534">Exact GPS Coordinates</b>
+                <div style="font-family:monospace;font-size:16px;font-weight:600;color:#0f172a;margin:3px 0;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+                <small style="color:#475569">Accuracy: ±${acc != null ? acc + ' m' : 'N/A'}${gpsTimestamp ? ` · Recorded: ${new Date(gpsTimestamp).toLocaleTimeString()}` : ''}</small>
+                ${acc != null && acc > 100 ? `
+                  <div style="margin-top:8px;padding:8px 12px;background:#fef3c7;border-left:3px solid #f59e0b;border-radius:4px;font-size:13px;color:#92400e;">
+                    ⚠️ GPS accuracy radius is approximately ±${acc} m (indoor/cellular estimate). Pin indicates estimated radius; proceed with caution.
+                  </div>
+                ` : ''}
               </div>
             </div>
             <div style="margin-top:12px">
-              <a href="https://www.google.com/maps?q=${lat},${lng}" target="_blank" rel="noopener noreferrer" class="btnViewOnGoogleMaps">
-                📍 View on Google Maps
+              <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btnViewOnGoogleMaps" id="btn-view-exact-location-${esc(i.id)}">
+                📍 View Exact Location on Google Maps
               </a>
             </div>
           </div>
@@ -1351,8 +1402,8 @@ function details(i) {
           <div class="gpsUnavailableBox" style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:12px;">
             <span style="font-size:24px">⚠️</span>
             <div>
-              <b style="color:#b45309;display:block">GPS location unavailable — contact the student for location.</b>
-              <small style="color:#78350f">${i.location?.locationStatus === 'permission_denied' ? 'The student denied location permission on their device.' : (i.location?.locationStatus === 'timeout' ? 'GPS location request timed out.' : 'No GPS signal was available at submission time.')}</small>
+              <b style="color:#b45309;display:block">Location not available</b>
+              <small style="color:#78350f">${i.location?.locationStatus === 'permission_denied' ? 'The student denied location permission on their device.' : (i.location?.locationStatus === 'timeout' ? 'GPS location request timed out.' : 'No GPS coordinates were available at alert creation time.')}</small>
             </div>
           </div>
         `}
@@ -1628,25 +1679,34 @@ let gps = null;
 let isSendingSos = false;
 
 /**
- * Captures live GPS coordinates using the Geolocation API.
- * Uses high accuracy, 10-second timeout, 0 max age.
- * Never hangs: has a fallback timeout so the emergency alert is NEVER delayed or lost.
+ * TASK 1: Captures live device GPS coordinates using the Geolocation API.
+ * Uses high accuracy (enableHighAccuracy: true), 10-second timeout, maximumAge: 0.
+ * Never returns cached/stale or default coordinates.
+ * Called directly from user button interaction so browser permission request appears correctly.
  */
-async function captureLiveGps(timeoutMs = 10000) {
+async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
+  if (typeof window !== 'undefined' && window.isSecureContext === false) {
+    console.warn('[SOS:GPS] Insecure context: navigator.geolocation is blocked by browsers on HTTP IP addresses. Access via HTTPS or localhost.');
+  }
+
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    console.warn('[SOS:GPS] Geolocation API not available or blocked in this browser.');
     return {
       latitude: null,
       longitude: null,
       accuracy: null,
       gpsTimestamp: null,
-      locationStatus: 'unavailable'
+      locationStatus: 'unavailable',
+      reason: 'Geolocation not supported or disabled'
     };
   }
+
+  if (onStatus) onStatus('Getting your current GPS location...');
 
   return new Promise((resolve) => {
     let resolved = false;
 
-    // Safety timeout ensures user is NEVER stuck on loading screen if browser hangs
+    // Safety timeout ensures user is NEVER stuck on loading screen if browser hangs or waits indefinitely
     const timer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
@@ -1656,56 +1716,80 @@ async function captureLiveGps(timeoutMs = 10000) {
           longitude: null,
           accuracy: null,
           gpsTimestamp: null,
-          locationStatus: 'timeout'
+          locationStatus: 'timeout',
+          reason: 'GPS request timed out'
         });
       }
     }, timeoutMs);
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timer);
-        console.log('[SOS:GPS] Successfully captured live GPS coordinates:', position.coords);
-        resolve({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          gpsTimestamp: new Date(position.timestamp || Date.now()).toISOString(),
-          locationStatus: 'available'
-        });
-      },
-      (error) => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timer);
-        console.warn('[SOS:GPS] Geolocation error:', error.code, error.message);
-        let status = 'unavailable';
-        if (error.code === 1) { // PERMISSION_DENIED
-          status = 'permission_denied';
-        } else if (error.code === 3) { // TIMEOUT
-          status = 'timeout';
+    try {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          const lat = Number(position.coords.latitude);
+          const lng = Number(position.coords.longitude);
+          const accuracy = position.coords.accuracy != null ? Number(position.coords.accuracy) : null;
+          const gpsTimestamp = new Date(position.timestamp || Date.now()).toISOString();
+          console.log('[SOS:GPS] Successfully captured live GPS coordinates:', { lat, lng, accuracy, gpsTimestamp });
+          resolve({
+            latitude: lat,
+            longitude: lng,
+            accuracy,
+            gpsTimestamp,
+            locationStatus: 'available'
+          });
+        },
+        (error) => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(timer);
+          console.warn('[SOS:GPS] Geolocation error:', error.code, error.message);
+          let status = 'unavailable';
+          if (error.code === 1) { // PERMISSION_DENIED
+            status = 'permission_denied';
+          } else if (error.code === 2) { // POSITION_UNAVAILABLE
+            status = 'position_unavailable';
+          } else if (error.code === 3) { // TIMEOUT
+            status = 'timeout';
+          }
+          resolve({
+            latitude: null,
+            longitude: null,
+            accuracy: null,
+            gpsTimestamp: null,
+            locationStatus: status,
+            reason: error.message
+          });
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: timeoutMs,
+          maximumAge: 0 // Do not use stale or cached position
         }
+      );
+    } catch (e) {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        console.warn('[SOS:GPS] Error invoking getCurrentPosition:', e.message);
         resolve({
           latitude: null,
           longitude: null,
           accuracy: null,
           gpsTimestamp: null,
-          locationStatus: status
+          locationStatus: 'unavailable',
+          reason: e.message
         });
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: timeoutMs,
-        maximumAge: 0
       }
-    );
+    }
   });
 }
 
 /**
- * Submits an SOS incident with automatic GPS capture, optional building details,
- * duplicate protection, and offline recovery.
+ * TASK 2: Submits an SOS incident with automatic real GPS capture, optional building details,
+ * duplicate protection, and graceful fallback.
  */
 async function executeSosSubmission({ categoryId, description = '', building = '', floor = '', room = '', submitBtnEl = null, errorEl = null }) {
   if (state.busy || isSendingSos) {
@@ -1715,9 +1799,14 @@ async function executeSosSubmission({ categoryId, description = '', building = '
   isSendingSos = true;
   state.busy = true;
 
+  // Immediately show a clear status to the user
   if (submitBtnEl) {
     submitBtnEl.disabled = true;
-    submitBtnEl.innerHTML = '<span class="btnSpinner"></span> Sending SOS...';
+    submitBtnEl.innerHTML = '<span class="btnSpinner"></span> Getting your current GPS location...';
+  }
+  const statusLabel = document.getElementById('gps-status-label');
+  if (statusLabel) {
+    statusLabel.textContent = 'Getting your current GPS location...';
   }
   if (errorEl) {
     errorEl.style.display = 'none';
@@ -1725,17 +1814,22 @@ async function executeSosSubmission({ categoryId, description = '', building = '
   }
 
   try {
-    // 1. Capture live GPS coordinates (or use cached prefetch if available and fresh)
-    let gpsResult = gps;
-    if (!gpsResult || gpsResult.latitude == null) {
-      console.log('[SOS:Student] Capturing live GPS location (enableHighAccuracy: true, timeout: 10000ms)...');
-      gpsResult = await captureLiveGps(10000);
+    // 1. Always capture fresh live device GPS directly on user SOS click (maximumAge: 0)
+    console.log('[SOS:Student] Requesting live device GPS on SOS click (maximumAge: 0, enableHighAccuracy: true)...');
+    const gpsResult = await captureLiveGps(10000, (msg) => {
+      if (submitBtnEl) submitBtnEl.innerHTML = `<span class="btnSpinner"></span> ${msg}`;
+      if (statusLabel) statusLabel.textContent = msg;
+    });
+    console.log('[SOS:Student] GPS capture completed:', gpsResult);
+
+    if (submitBtnEl) {
+      submitBtnEl.innerHTML = '<span class="btnSpinner"></span> Dispatching emergency alert...';
     }
-    console.log('[SOS:Student] GPS capture result:', gpsResult);
 
     // 2. Assemble complete payload
     const cat = category(categoryId) || category('other') || state.categories[0];
     const idempotencyKey = crypto.randomUUID();
+    const hasGps = gpsResult.latitude != null && gpsResult.longitude != null;
     const payload = {
       categoryId: cat?.id || 'other',
       description: String(description || '').trim(),
@@ -1744,12 +1838,12 @@ async function executeSosSubmission({ categoryId, description = '', building = '
         floor: String(floor || '').trim(),
         room: String(room || '').trim(),
         area: String(room || '').trim(),
-        latitude: gpsResult.latitude,
-        longitude: gpsResult.longitude,
-        accuracy: gpsResult.accuracy,
+        latitude: hasGps ? Number(gpsResult.latitude) : null,
+        longitude: hasGps ? Number(gpsResult.longitude) : null,
+        accuracy: hasGps && gpsResult.accuracy != null ? Number(gpsResult.accuracy) : null,
         gpsTimestamp: gpsResult.gpsTimestamp,
         locationStatus: gpsResult.locationStatus,
-        source: gpsResult.latitude != null ? 'GPS' : 'MANUAL'
+        source: hasGps ? 'GPS' : 'MANUAL'
       },
       idempotencyKey
     };
@@ -1838,12 +1932,13 @@ async function executeSosSubmission({ categoryId, description = '', building = '
     gps = null;
     state.selected = created;
     if (gpsResult.locationStatus === 'available') {
-      state.notice = `🚨 SOS sent successfully! (ID: ${created.id}). Response team notified with your live GPS location.`;
+      const accText = gpsResult.accuracy != null ? ` (±${Math.round(gpsResult.accuracy)}m)` : '';
+      state.notice = `🚨 SOS sent successfully! (ID: ${created.id}). Response team notified with your live GPS location${accText}.`;
     } else {
       const reason = gpsResult.locationStatus === 'permission_denied'
         ? 'GPS permission was denied'
         : (gpsResult.locationStatus === 'timeout' ? 'GPS request timed out' : 'GPS signal was unavailable');
-      state.notice = `🚨 Emergency SOS sent successfully! (ID: ${created.id}). Note: ${reason}. Please enter building details if possible or retry location sharing.`;
+      state.notice = `🚨 Emergency SOS sent successfully! (ID: ${created.id}). Note: ${reason}. Location marked unavailable — please enter building details or retry location sharing.`;
     }
 
     await refresh();
@@ -2063,108 +2158,7 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
-  // Student Test Drill button
-  if (a === 'student-test-drill') {
-    if (state.busy) return;
-    state.busy = true;
 
-    const drillPayload = {
-      categoryId: 'security',
-      description: '⚡ Test emergency drill dispatched from student account: ' + (state.user?.name || 'Student'),
-      location: {
-        building: 'Main Academic Block',
-        floor: 'Ground Floor',
-        room: 'Lobby',
-        source: 'TEST_DRILL'
-      },
-      idempotencyKey: 'drill-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7)
-    };
-
-    console.log('%c[SOS:Student] 1. Test Drill button pressed by student', 'color:#0284c7;font-size:14px;font-weight:bold');
-
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      const localId = 'QUEUED-DRILL-' + Math.floor(1000 + Math.random() * 9000);
-      addPendingSos({ localId, payload: drillPayload, createdAt: new Date().toISOString() });
-      const pendingInc = {
-        id: localId,
-        localId,
-        category_id: 'security',
-        student_id: state.user.id,
-        student_name: state.user.name,
-        description: drillPayload.description,
-        location: drillPayload.location,
-        priority: 'CRITICAL',
-        status: 'QUEUED_OFFLINE',
-        serverConfirmed: false,
-        primary_department_id: 'DEPT_SECURITY',
-        assigned_departments: ['DEPT_SECURITY'],
-        created_at: new Date().toISOString(),
-        timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
-      };
-      state.incidents.unshift(pendingInc);
-      state.selected = pendingInc;
-      state.error = '⚠️ Device is offline. Drill SOS queued locally and will submit when internet connectivity returns. Responders have not been notified.';
-      state.busy = false;
-      render();
-      return;
-    }
-
-    try {
-      let created;
-      try {
-        console.log('[SOS:Student] 2. Submitting SOS payload to /api/sos...');
-        created = await api('/api/sos', {
-          method: 'POST',
-          body: JSON.stringify(drillPayload)
-        });
-      } catch (apiErr) {
-        console.warn('[SOS:Student] Backend /api/sos error:', apiErr.message);
-        const localId = 'QUEUED-DRILL-' + Math.floor(1000 + Math.random() * 9000);
-        addPendingSos({ localId, payload: drillPayload, createdAt: new Date().toISOString() });
-        const pendingInc = {
-          id: localId,
-          localId,
-          category_id: 'security',
-          student_id: state.user.id,
-          student_name: state.user.name,
-          description: drillPayload.description,
-          location: drillPayload.location,
-          priority: 'CRITICAL',
-          status: 'QUEUED_OFFLINE',
-          serverConfirmed: false,
-          primary_department_id: 'DEPT_SECURITY',
-          assigned_departments: ['DEPT_SECURITY'],
-          created_at: new Date().toISOString(),
-          timeline: [{ status: 'QUEUED_OFFLINE', timestamp: new Date().toISOString() }]
-        };
-        state.incidents.unshift(pendingInc);
-        state.selected = pendingInc;
-        state.error = '⚠️ Server could not be reached. Drill SOS queued locally. Responders not notified yet.';
-        state.busy = false;
-        render();
-        return;
-      }
-
-      console.log(`%c[SOS:Student] 3. SOS created! ID: ${created.id}`, 'color:#059669;font-size:14px;font-weight:bold', created);
-
-      syncIncidentToFirestore(created).catch(e => console.warn('[SOS:Firestore] Notice:', e.message));
-
-      if (sosBroadcast) {
-        sosBroadcast.postMessage({ event: 'sos.created', incident: created });
-        console.log('%c[SOS:RealTime] 5. Dispatched cross-tab emergency broadcast to responder', 'color:#8b5cf6;font-weight:bold');
-      }
-
-      state.selected = created;
-      state.notice = `🚨 Drill SOS Confirmed (ID: ${created.id}). Response team notified!`;
-      await refresh();
-    } catch (err) {
-      console.error('[SOS:Student] Error submitting SOS:', err.message);
-      state.error = err.message;
-      render();
-    } finally {
-      state.busy = false;
-    }
-  }
 
   // Permission request for audio & notifications
   if (a === 'request-permission') {
@@ -2276,7 +2270,7 @@ document.addEventListener('click', async (e) => {
   if (a === 'instant-one-click-sos') {
     const heroBtn = el;
     heroBtn.disabled = true;
-    heroBtn.innerHTML = '<span class="btnSpinner"></span> Sending SOS...';
+    heroBtn.innerHTML = '<span class="btnSpinner"></span> Getting your current GPS location...';
     await executeSosSubmission({
       categoryId: 'other',
       description: 'One-Click Emergency Alert',
@@ -2286,8 +2280,10 @@ document.addEventListener('click', async (e) => {
 
   if (a === 'gps') {
     const span = el.querySelector('span') || el;
-    span.textContent = 'Locating…';
-    const loc = await captureLiveGps(10000);
+    span.textContent = 'Getting your current GPS location...';
+    const loc = await captureLiveGps(10000, (msg) => {
+      span.textContent = msg;
+    });
     gps = loc;
     if (loc.locationStatus === 'available') {
       span.textContent = `📍 Live GPS captured (±${Math.round(loc.accuracy || 0)}m)`;

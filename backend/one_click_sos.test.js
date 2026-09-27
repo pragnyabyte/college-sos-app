@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getDb } from './db.js';
+import { getDb, closeDatabase } from './db.js';
 import { createIncident, getIncident, changeStatus, updateIncidentLocation, deleteIncident } from './service.js';
 
 const responder = { id: 'RESP-1111', name: 'Duty Officer', role: 'RESPONDER' };
@@ -218,3 +218,8 @@ test('TEST 6: Student updates/retries live location on active incident', async (
   // Clean up
   await deleteIncident(inc.id, responder);
 });
+
+test.after(async () => {
+  await closeDatabase();
+});
+

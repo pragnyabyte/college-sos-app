@@ -18,9 +18,18 @@ async function hydrate(i,user){
     delete location.latitude;
     delete location.longitude;
     delete location.accuracy;
+  } else {
+    if (location.latitude != null) location.latitude = Number(location.latitude);
+    if (location.longitude != null) location.longitude = Number(location.longitude);
+    if (location.accuracy != null) location.accuracy = Number(location.accuracy);
   }
   const timeline=await db.collection('timeline').find({incident_id:i.id},{projection:{_id:0,incident_id:0}}).sort({timestamp:1}).toArray();
   const {_id,...incident}=i;
+  if (!canSeeGps) {
+    delete incident.latitude;
+    delete incident.longitude;
+    delete incident.accuracy;
+  }
   return{
     ...incident,
     _id:String(_id||''),
