@@ -76,7 +76,7 @@ async function run() {
     name: 'Campus Emergency Response Unit',
     regdNo: 'RESP-1111',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(respRes.status, 200, 'Responder login must succeed');
   const respToken = respRes.data.token;

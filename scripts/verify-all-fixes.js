@@ -124,7 +124,7 @@ async function runVerification() {
     console.log('  ✓ PASS: Untrusted origins are blocked with 403 and no allow-origin header.\n');
 
     // Check Responder Login with Reachable Backend
-    console.log('Test 8: Testing Responder Login with correct credentials (RESP-1111 / 2611)...');
+    console.log('Test 8: Testing Responder Login with correct credentials (RESP-1111 / 2026)...');
     const validLogin = await fetch(`${BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: {
@@ -135,7 +135,7 @@ async function runVerification() {
         name: 'Campus Emergency Response Unit',
         regdNo: 'RESP-1111',
         role: 'RESPONDER',
-        pin: '2611'
+        pin: '2026'
       })
     });
     assert.equal(validLogin.status, 200, 'Valid responder login must return HTTP 200');

@@ -66,20 +66,26 @@ test('createSessionUser rejects email addresses and enforces Registration/Roll/I
     }
 });
 
-test('verifyResponderCredentials accepts only authorized credentials RESP-1111 and 2611', async () => {
-    // Correct credentials
-    const responder = await verifyResponderCredentials('RESP-1111', '2611', 'Campus Emergency Response Unit');
+test('verifyResponderCredentials accepts only authorized credentials RESP-1111 and 2026', async () => {
+    // Correct credentials with new PIN 2026
+    const responder = await verifyResponderCredentials('RESP-1111', '2026', 'Campus Emergency Response Unit');
     assert.equal(responder.id, 'RESP-1111');
     assert.equal(responder.role, 'RESPONDER');
     assert.equal(responder.departmentId, 'DEPT_SECURITY');
 
+    // Reject old PIN 2611
+    await assert.rejects(
+        () => verifyResponderCredentials('RESP-1111', '2611'),
+        /Invalid PIN/
+    );
+
     // Reject old / wrong ID (250131 and RESP-001)
     await assert.rejects(
-        () => verifyResponderCredentials('250131', '2611'),
+        () => verifyResponderCredentials('250131', '2026'),
         /Invalid Registration Number/
     );
     await assert.rejects(
-        () => verifyResponderCredentials('RESP-001', '2611'),
+        () => verifyResponderCredentials('RESP-001', '2026'),
         /Invalid Registration Number/
     );
 
@@ -96,7 +102,7 @@ test('verifyResponderCredentials accepts only authorized credentials RESP-1111 a
 
     // Reject empty ID
     await assert.rejects(
-        () => verifyResponderCredentials('', '2611'),
+        () => verifyResponderCredentials('', '2026'),
         /Registration \/ ID No. is required/
     );
 });

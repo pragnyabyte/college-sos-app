@@ -27,7 +27,7 @@ async function run() {
     name: 'Emergency Response Unit',
     regdNo: 'RESP-1111',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(respLogin.status, 200, 'Responder login should succeed');
   const respToken = respLogin.data.token;

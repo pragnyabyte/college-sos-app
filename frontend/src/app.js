@@ -1542,7 +1542,7 @@ async function handleLogin(formEl) {
     // - Keep the page, layout, Registration Number, buttons, and all other UI elements unchanged.
     // - Only clear/vacate the incorrect PIN field.
     // - Show a small, clear error message: "Invalid PIN".
-    if (pin !== '2611') {
+    if (pin !== '2026') {
       showLoginError('Invalid PIN');
       if (pinInput) {
         pinInput.value = '';

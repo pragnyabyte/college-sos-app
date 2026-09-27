@@ -19,40 +19,53 @@ async function runTestSuite() {
   console.log('MASTER TEST SUITE — EMERGENCY RESPONDER AUTHENTICATION');
   console.log('===============================================================\n');
 
-  // Test Case 1: "RESP-1111" + "2611" → Login successful
-  console.log('1. Testing "RESP-1111" + "2611" (Valid Credentials)...');
+  // Test Case 1: "RESP-1111" + "2026" → Login successful
+  console.log('1. Testing "RESP-1111" + "2026" (Valid Credentials)...');
   const resValid = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
     regdNo: 'RESP-1111',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(resValid.status, 200, 'Valid responder login must return 200');
   assert.equal(resValid.data.user.id, 'RESP-1111');
   assert.equal(resValid.data.user.role, 'RESPONDER');
   assert.ok(resValid.data.token, 'Token must be issued');
-  console.log('   ✓ PASS: Login successful with RESP-1111 + 2611. Token issued.\n');
+  console.log('   ✓ PASS: Login successful with RESP-1111 + 2026. Token issued.\n');
 
-  // Test Case 2: "250131" + "2611" → Login rejected
-  console.log('2. Testing "250131" + "2611" (Old/Unauthorized ID)...');
+  // Test Case 1b: "RESP-1111" + "2611" (Old PIN) → Login rejected
+  console.log('1b. Testing "RESP-1111" + "2611" (Previous/Old PIN must fail)...');
+  const resOldPin = await req('/api/auth/login', 'POST', {
+    name: 'Campus Emergency Response Unit',
+    regdNo: 'RESP-1111',
+    role: 'RESPONDER',
+    pin: '2611'
+  });
+  assert.equal(resOldPin.status, 401, 'Old PIN 2611 must return 401 Unauthorized');
+  assert.equal(resOldPin.data.error, 'Invalid PIN');
+  assert.equal(resOldPin.data.field, 'pin');
+  console.log('   ✓ PASS: Previous PIN 2611 correctly rejected with 401 Invalid PIN.\n');
+
+  // Test Case 2: "250131" + "2026" → Login rejected
+  console.log('2. Testing "250131" + "2026" (Old/Unauthorized ID)...');
   const resOldId = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
     regdNo: '250131',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(resOldId.status, 401, 'Old ID must return 401 Unauthorized');
   assert.equal(resOldId.data.error, 'Invalid Registration Number');
   assert.equal(resOldId.data.field, 'registration_number');
-  console.log('   ✓ PASS: 250131 + 2611 rejected with 401 Invalid Registration Number.\n');
+  console.log('   ✓ PASS: 250131 + 2026 rejected with 401 Invalid Registration Number.\n');
 
   // Test Case 3: Wrong ID + correct PIN → Only ID field identified for clearing
-  console.log('3. Testing Wrong ID ("WRONG-ID-99") + correct PIN ("2611")...');
+  console.log('3. Testing Wrong ID ("WRONG-ID-99") + correct PIN ("2026")...');
   const resWrongId = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
     regdNo: 'WRONG-ID-99',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(resWrongId.status, 401, 'Wrong ID must return 401');
   assert.equal(resWrongId.data.error, 'Invalid Registration Number');
@@ -78,7 +91,7 @@ async function runTestSuite() {
     name: 'Campus Emergency Response Unit',
     regdNo: '',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(resEmptyId.status, 400, 'Empty ID must return 400');
   assert.ok(resEmptyId.data.error.includes('Registration / ID No. is required'));

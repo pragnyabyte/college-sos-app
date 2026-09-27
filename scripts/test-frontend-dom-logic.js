@@ -34,19 +34,19 @@ console.log('3. Checking Validation Rules in handleLogin()...');
 // Responder ID must be RESP-1111
 assert.ok(appJs.includes("regdNo !== 'RESP-1111'"), 'Must reject if regdNo is not RESP-1111');
 assert.ok(appJs.includes("showLoginError('Invalid Registration Number')"), 'Must show clear error for invalid ID');
-// PIN must be 2611
-assert.ok(appJs.includes("pin !== '2611'"), 'Must reject if pin is not 2611');
+// PIN must be 2026
+assert.ok(appJs.includes("pin !== '2026'"), 'Must reject if pin is not 2026');
 assert.ok(appJs.includes("showLoginError('Invalid PIN')"), 'Must show clear error for invalid PIN');
 
 // Selective Field Clearing:
 // If ID is wrong, only regdInput is cleared, pinInput is untouched
-const wrongIdBlock = appJs.slice(appJs.indexOf("if (regdNo !== 'RESP-1111')"), appJs.indexOf("if (pin !== '2611')"));
+const wrongIdBlock = appJs.slice(appJs.indexOf("if (regdNo !== 'RESP-1111')"), appJs.indexOf("if (pin !== '2026')"));
 assert.ok(wrongIdBlock.includes("regdInput.value = ''"), 'Must clear regdInput when ID is invalid');
 assert.ok(!wrongIdBlock.includes("pinInput.value = ''"), 'Must NOT clear pinInput when ID is invalid');
 console.log('   ✓ PASS: Wrong ID clears ONLY the Registration Number field; PIN is preserved.\n');
 
 // If PIN is wrong, only pinInput is cleared, regdInput is untouched
-const wrongPinBlock = appJs.slice(appJs.indexOf("if (pin !== '2611')"), appJs.indexOf("state.busy = true"));
+const wrongPinBlock = appJs.slice(appJs.indexOf("if (pin !== '2026')"), appJs.indexOf("state.busy = true"));
 assert.ok(wrongPinBlock.includes("pinInput.value = ''"), 'Must clear pinInput when PIN is invalid');
 assert.ok(!wrongPinBlock.includes("regdInput.value = ''"), 'Must NOT clear regdInput when PIN is invalid');
 console.log('   ✓ PASS: Wrong PIN clears ONLY the PIN field; Registration Number is preserved.\n');

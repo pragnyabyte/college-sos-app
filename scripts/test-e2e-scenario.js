@@ -46,7 +46,7 @@ async function runScenario() {
 
   // Step 4 & 5: Responder RESP-1111 authenticates and registers device
   console.log('\n4. Responder RESP-1111 authenticates with responder credentials...');
-  const respLogin = await req('/api/auth/responder-login', 'POST', { responderId: 'RESP-1111', pin: '2611' });
+  const respLogin = await req('/api/auth/responder-login', 'POST', { responderId: 'RESP-1111', pin: '2026' });
   assert.equal(respLogin.status, 200, 'Responder login should succeed');
   assert.equal(respLogin.data.user.id, 'RESP-1111');
   assert.equal(respLogin.data.user.role, 'RESPONDER');
@@ -87,7 +87,7 @@ async function runScenario() {
   // Let's verify device registration remains active in database!
   console.log('   ✓ Website session ended. Verifying device token persistence in database...');
   // Re-verify devices using administrative check
-  const verifyPersisted = await req('/api/auth/responder-login', 'POST', { responderId: 'RESP-1111', pin: '2611' });
+  const verifyPersisted = await req('/api/auth/responder-login', 'POST', { responderId: 'RESP-1111', pin: '2026' });
   const checkDev = await req('/api/responder/devices', 'GET', null, verifyPersisted.data.token);
   const stillHasPhoneA = checkDev.data.some(d => d.deviceId === phoneA_DeviceId && d.active);
   assert.ok(stillHasPhoneA, 'Phone A MUST remain registered in database after logout!');

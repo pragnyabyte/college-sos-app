@@ -45,7 +45,7 @@ export function createSessionUser({ name, regdNo, role, departmentId, isResponde
 }
 
 export const AUTHORIZED_RESPONDER_ID = 'RESP-1111';
-export const AUTHORIZED_RESPONDER_PIN = '2611';
+export const AUTHORIZED_RESPONDER_PIN = '2026';
 
 export async function verifyResponderCredentials(responderId, pin, name) {
     const id = String(responderId || '').trim();
@@ -62,15 +62,19 @@ export async function verifyResponderCredentials(responderId, pin, name) {
         throw Object.assign(new Error('Invalid Registration Number'), { status: 401, field: 'registration_number' });
     }
 
-    let dbPin = expectedPin;
     try {
         const db = await getDb();
         const doc = await db.collection('emergency_responders').findOne({ responderId: id });
-        if (doc && doc.pin) dbPin = doc.pin;
+        if (doc && doc.pin !== expectedPin) {
+            await db.collection('emergency_responders').updateOne(
+                { responderId: id },
+                { $set: { pin: expectedPin, updatedAt: new Date().toISOString() } }
+            );
+        }
     } catch {}
 
-    // Requirement: Responder PIN must be exactly 2611
-    if (cleanPin !== expectedPin && cleanPin !== dbPin) {
+    // Requirement: Responder PIN must be exactly 2026 (old PIN 2611 is rejected)
+    if (cleanPin !== expectedPin) {
         throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
     }
 

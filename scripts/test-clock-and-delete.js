@@ -69,13 +69,13 @@ async function runTests() {
   assert.equal(studentDelAttempt.status, 403, 'Student should be rejected with 403 Forbidden');
   console.log('   ✓ Student deletion rejected with 403 Forbidden as expected');
 
-  // 5. Test Authorized Responder Authentication (RESP-1111 / 2611)
+  // 5. Test Authorized Responder Authentication (RESP-1111 / 2026)
   console.log('\n5. Authenticating authorized Emergency Responder (RESP-1111)...');
   const respLogin = await req('/api/auth/login', 'POST', {
     name: 'Campus Emergency Response Unit',
     regdNo: 'RESP-1111',
     role: 'RESPONDER',
-    pin: '2611'
+    pin: '2026'
   });
   assert.equal(respLogin.status, 200, 'Responder authentication should succeed');
   const respToken = respLogin.data.token;

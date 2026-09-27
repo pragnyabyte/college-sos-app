@@ -84,7 +84,7 @@ async function runTests() {
   console.log('   ✓ PASS: Student login works normally.\n');
 
   // 6. Verify Emergency Responder Login Works Normally
-  console.log('6. Testing Emergency Responder Login (RESP-1111 + 2611)...');
+  console.log('6. Testing Emergency Responder Login (RESP-1111 + 2026)...');
   const respAttempt = await fetch(`${BASE_URL}/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -92,7 +92,7 @@ async function runTests() {
       name: 'Campus Emergency Response Unit',
       regdNo: 'RESP-1111',
       role: 'RESPONDER',
-      pin: '2611'
+      pin: '2026'
     })
   });
   const respData = await respAttempt.json().catch(() => ({}));

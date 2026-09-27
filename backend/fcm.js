@@ -10,7 +10,7 @@ let fcmError = null;
 let hasServiceAccount = false;
 
 export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || 'RESP-1111';
-export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2611';
+export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2026';
 
 /**
  * Initializes Firebase Admin SDK safely without crashing if credentials are not yet supplied.
