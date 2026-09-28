@@ -62,6 +62,33 @@ class MainActivity : AppCompatActivity() {
         registerNetworkMonitoring()
         loadIncidents()
         sendDevicePing()
+        handleIncomingIncidentIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIncidentIntent(intent)
+    }
+
+    private fun handleIncomingIncidentIntent(incomingIntent: Intent?) {
+        val targetId = incomingIntent?.getStringExtra("incident_id")
+            ?: incomingIntent?.getStringExtra("sosId")
+            ?: incomingIntent?.getStringExtra("id")
+        if (!targetId.isNullOrBlank()) {
+            lifecycleScope.launch {
+                try {
+                    val repo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
+                    val result = withContext(Dispatchers.IO) {
+                        repo.getIncidents()
+                    }
+                    val found = result.getOrNull()?.find { it.id == targetId }
+                    if (found != null) {
+                        openIncidentAlert(found)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     override fun onResume() {
