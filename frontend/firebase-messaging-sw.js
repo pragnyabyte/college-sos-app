@@ -45,7 +45,7 @@ function formatEmergencyNotification(payload) {
       vibrate: [500, 250, 500, 250, 500, 250, 500],
       data: {
         id,
-        url: d.url || `/responder?incidentId=${encodeURIComponent(id)}`,
+        url: d.url || `/?incidentId=${encodeURIComponent(id)}`,
         timestamp: d.timestamp || new Date().toISOString()
       },
       actions: [
@@ -95,21 +95,21 @@ self.addEventListener('push', (event) => {
 // Notification click handling
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const urlToOpen = event.notification.data?.url || '/responder';
   const targetSosId = event.notification.data?.id;
+  const urlToOpen = event.notification.data?.url || (targetSosId ? `/?incidentId=${encodeURIComponent(targetSosId)}` : '/');
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      // If a responder tab is already open, focus it and notify it
+      // If any tab of our web app is already open, focus it and notify it
       for (const client of windowClients) {
-        if (client.url.includes('/responder') && 'focus' in client) {
+        if ('focus' in client) {
           if (targetSosId) {
             client.postMessage({ type: 'OPEN_SOS_ID', id: targetSosId });
           }
           return client.focus();
         }
       }
-      // If no responder tab is open, open a new window
+      // If no tab is open, open a new window pointing directly to the target emergency incident
       if (clients.openWindow) {
         return clients.openWindow(urlToOpen);
       }

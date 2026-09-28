@@ -443,25 +443,6 @@ function isResponderUser(u) {
   return r === 'RESPONDER' || u.id === 'RESP-1111';
 }
 
-function checkIncidentQueryParam() {
-  const q = new URLSearchParams(window.location.search);
-  const incId = q.get('incidentId');
-  if (incId) {
-    api(`/api/sos/${incId}`).then(inc => {
-      if (inc) {
-        state.selected = inc;
-        render();
-      }
-    }).catch(() => {
-      const found = state.incidents.find(x => x.id === incId);
-      if (found) {
-        state.selected = found;
-        render();
-      }
-    });
-  }
-}
-
 // Real-time Firestore listener instance
 let firestoreUnsub = null;
 function attachFirestoreListener() {
@@ -484,12 +465,31 @@ function attachFirestoreListener() {
         }
         if (deletedId) alertedSosIds.delete(deletedId);
         if (deletedMongoId) alertedSosIds.delete(deletedMongoId);
-        try { sessionStorage.setItem('sos_alerted_ids', JSON.stringify([...alertedSosIds])); } catch {}
+        saveAlertedSosIds();
         render();
         return;
       }
-      if (['RESOLVED', 'CANCELLED', 'REJECTED'].includes(incident.status)) return;
-      console.log(`%c[SOS:Firestore] Active incident received via Firestore onSnapshot (${changeType}): ${incident.id}`, 'color:#ef4444;font-weight:bold');
+      // On initial snapshot connection, mark all existing incidents as known so we NEVER ring old historical alerts
+      if (changeType === 'initial') {
+        if (incident && incident.id) {
+          alertedSosIds.add(incident.id);
+          saveAlertedSosIds();
+        }
+        return;
+      }
+      if (['RESOLVED', 'CANCELLED', 'REJECTED', 'ACCEPTED', 'RESPONDING', 'ARRIVED'].includes(incident.status)) return;
+
+      // Recency check: only play audible emergency alarm if created within the last 5 minutes
+      const createdTime = new Date(incident.created_at || incident.createdAt || Date.now()).getTime();
+      const ageMs = Date.now() - createdTime;
+      if (ageMs > 5 * 60 * 1000) {
+        console.log(`[SOS:Firestore] Storing historical incident ${incident.id} without ringing alarm (age: ${Math.round(ageMs/1000)}s)`);
+        alertedSosIds.add(incident.id);
+        saveAlertedSosIds();
+        return;
+      }
+
+      console.log(`%c[SOS:Firestore] Active emergency incident received via onSnapshot (${changeType}): ${incident.id}`, 'color:#ef4444;font-weight:bold');
       triggerResponderEmergencyAlert(incident);
       refresh();
     }, (err) => {
@@ -500,17 +500,25 @@ function attachFirestoreListener() {
   }
 }
 
-// Deduplication tracking for emergency alerts
+// Deduplication tracking for emergency alerts (persisted in localStorage across reloads/reboots)
 const alertedSosIds = new Set();
 try {
-  const saved = sessionStorage.getItem('sos_alerted_ids');
+  const saved = localStorage.getItem('sos_alerted_ids') || sessionStorage.getItem('sos_alerted_ids');
   if (saved) JSON.parse(saved).forEach(id => alertedSosIds.add(id));
 } catch {}
+
+function saveAlertedSosIds() {
+  try {
+    const list = [...alertedSosIds].slice(-200);
+    localStorage.setItem('sos_alerted_ids', JSON.stringify(list));
+    sessionStorage.setItem('sos_alerted_ids', JSON.stringify(list));
+  } catch {}
+}
 
 // Persistent deletion tracking to prevent race condition resurrection during background syncing
 const locallyDeletedIds = new Set();
 try {
-  const savedDeleted = sessionStorage.getItem('sos_deleted_ids');
+  const savedDeleted = localStorage.getItem('sos_deleted_ids') || sessionStorage.getItem('sos_deleted_ids');
   if (savedDeleted) JSON.parse(savedDeleted).forEach(id => locallyDeletedIds.add(id));
 } catch {}
 
@@ -527,9 +535,7 @@ function triggerResponderEmergencyAlert(incident) {
     return;
   }
   alertedSosIds.add(incident.id);
-  try {
-    sessionStorage.setItem('sos_alerted_ids', JSON.stringify([...alertedSosIds]));
-  } catch {}
+  saveAlertedSosIds();
 
   console.log('%c🚨 [SOS:Responder] EMERGENCY ALERT TRIGGERED for ' + incident.id, 'background:#dc2626;color:white;font-size:15px;font-weight:bold;padding:4px 8px;border-radius:4px');
   console.log('   Emergency:', incident.category_id || incident.categoryId, '| Location:', incident.location?.building || incident.building);
@@ -563,6 +569,58 @@ function triggerResponderEmergencyAlert(incident) {
   render();
 }
 
+/**
+ * Checks URL query parameters on initial page load (e.g., from notification click ?incidentId=SOS-123)
+ * and automatically opens the target incident details without dropping to homepage.
+ */
+export function checkIncidentQueryParam() {
+  try {
+    if (typeof window === 'undefined') return;
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetId = urlParams.get('incidentId') || urlParams.get('incident') || urlParams.get('sosId') || urlParams.get('id');
+    if (targetId) {
+      console.log('%c[SOS:Routing] Target incident specified in URL query: ' + targetId, 'color:#2563eb;font-weight:bold');
+      const found = state.incidents.find(x => x.id === targetId || x._id === targetId);
+      if (found) {
+        state.selected = found;
+        render();
+      } else {
+        fetchIncidentFromFirestore(targetId).then(inc => {
+          if (inc) {
+            state.selected = inc;
+            render();
+          }
+        }).catch(err => {
+          console.warn('[SOS:Routing] Could not load incident from URL query:', err.message);
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[SOS:Routing] Notice parsing incident URL query:', err.message);
+  }
+}
+
+// Service Worker message listener (opens incident when notification is clicked)
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'OPEN_SOS_ID' && event.data.id) {
+      const incId = event.data.id;
+      const found = state.incidents.find(x => x.id === incId || x._id === incId);
+      if (found) {
+        state.selected = found;
+        render();
+      } else {
+        fetchIncidentFromFirestore(incId).then(inc => {
+          if (inc) {
+            state.selected = inc;
+            render();
+          }
+        }).catch(() => {});
+      }
+    }
+  });
+}
+
 // FCM Foreground and Background event handling
 window.addEventListener('sos:select', (e) => {
   const incId = e.detail?.id;
@@ -572,9 +630,11 @@ window.addEventListener('sos:select', (e) => {
       state.selected = found;
       render();
     } else {
-      api(`/api/sos/${incId}`).then(inc => {
-        state.selected = inc;
-        render();
+      fetchIncidentFromFirestore(incId).then(inc => {
+        if (inc) {
+          state.selected = inc;
+          render();
+        }
       }).catch(() => {});
     }
   }
@@ -584,14 +644,13 @@ async function initResponderPush() {
   if (!isResponderUser(state.user)) return;
   console.log('%c[SOS:Responder] Initializing device FCM registration and notification permissions...', 'color:#2563eb');
   try {
-    let vapidKey = '';
-    try {
-      const isStaticHost = location.hostname.endsWith('.web.app') || location.hostname.endsWith('.firebaseapp.com');
-      if (!isStaticHost || RAW_API_URL) {
+    let vapidKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_VAPID_KEY) || '';
+    if (!vapidKey) {
+      try {
         const cfg = await fetch(buildApiUrl('/api/config')).then(r => r.json());
         vapidKey = cfg.vapidKey || '';
-      }
-    } catch {}
+      } catch {}
+    }
 
     await setupResponderFCM({
       vapidKey,

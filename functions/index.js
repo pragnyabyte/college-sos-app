@@ -36,9 +36,12 @@ let dbInitialized = false;
 
 async function ensureInit() {
   if (!dbInitialized) {
-    await initDatabase();
-    initFirebaseAdmin();
-    await ensurePermanentResponder();
+    try {
+      initFirebaseAdmin();
+      await ensurePermanentResponder();
+    } catch (e) {
+      console.warn('[ensureInit] Firebase admin init notice:', e.message);
+    }
     dbInitialized = true;
   }
 }
@@ -387,7 +390,7 @@ export const onIncidentCreated = onDocumentCreated(
       if (!incident) return;
 
       // Skip non-active incidents
-      if (incident.status === 'RESOLVED' || incident.status === 'CANCELLED') {
+      if (incident.status === 'RESOLVED' || incident.status === 'CANCELLED' || incident.status === 'ACCEPTED') {
         return;
       }
 

@@ -70,6 +70,11 @@ class SosFirebaseMessagingService : FirebaseMessagingService() {
         val accuracy = data["accuracy"]?.toDoubleOrNull()
 
         val prefs = PreferencesManager.getInstance(applicationContext)
+        if (prefs.isIncidentAlerted(sosId)) {
+            Log.d(TAG, "Incident $sosId already alerted on this device. Skipping duplicate alarm.")
+            return
+        }
+        prefs.markIncidentAlerted(sosId)
 
         // 1. Send immediate delivery receipt to Cloud Firestore for audit logging
         serviceScope.launch {

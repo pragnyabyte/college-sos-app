@@ -88,7 +88,8 @@ class MainActivity : AppCompatActivity() {
                     adapter.submitList(activeList)
                     binding.tvEmpty.visibility = if (activeList.isEmpty()) View.VISIBLE else View.GONE
 
-                    if (newlyAdded != null && !alertedIncidentIds.contains(newlyAdded.id)) {
+                    if (newlyAdded != null && !prefs.isIncidentAlerted(newlyAdded.id)) {
+                        prefs.markIncidentAlerted(newlyAdded.id)
                         alertedIncidentIds.add(newlyAdded.id)
                         val locStr = "${newlyAdded.location?.building ?: ""} · ${newlyAdded.location?.floor ?: ""} · ${newlyAdded.location?.room ?: ""}".trim()
                         EmergencyAlertForegroundService.startEmergencyAlert(
@@ -291,7 +292,8 @@ class MainActivity : AppCompatActivity() {
                         binding.tvOverdueAlertSubtext.text = "Incident ${unacknowledged.first().id} at ${unacknowledged.first().location?.building ?: "Campus"} (Reported: ${unacknowledged.first().createdAt ?: "Recently"})"
 
                         for (inc in unacknowledged) {
-                            if (!alertedIncidentIds.contains(inc.id)) {
+                            if (!prefs.isIncidentAlerted(inc.id)) {
+                                prefs.markIncidentAlerted(inc.id)
                                 alertedIncidentIds.add(inc.id)
                                 val locStr = "${inc.location?.building ?: ""} · ${inc.location?.floor ?: ""} · ${inc.location?.room ?: ""}".trim()
                                 EmergencyAlertForegroundService.startEmergencyAlert(

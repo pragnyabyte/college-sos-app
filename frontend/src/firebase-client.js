@@ -835,6 +835,26 @@ export async function syncIncidentToFirestore(incident) {
 }
 
 /**
+ * Fetches a single emergency incident by ID from Cloud Firestore.
+ */
+export async function getIncidentFromFirestore(incidentId) {
+  if (!incidentId) return null;
+  const db = getFirebaseFirestore();
+  if (!db) return null;
+  try {
+    const snap = await getDoc(doc(db, 'incidents', String(incidentId)));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (!data.created_at && data.createdAt) data.created_at = data.createdAt;
+      return { ...data, id: snap.id };
+    }
+  } catch (err) {
+    console.warn('[SOS:Firestore] Error fetching incident ' + incidentId + ':', err.message);
+  }
+  return null;
+}
+
+/**
  * Attaches a real-time Firestore listener for emergency incidents.
  */
 export function listenToFirestoreIncidents(onIncidentCallback, onError) {
@@ -843,6 +863,7 @@ export function listenToFirestoreIncidents(onIncidentCallback, onError) {
     if (!db) return () => {};
     console.log('%c[SOS:Firestore] Attaching real-time onSnapshot listener to collection("incidents")...', 'color:#0284c7;font-weight:bold');
     const colRef = collection(db, 'incidents');
+    let isInitialSnapshot = true;
     const unsubscribe = onSnapshot(colRef, (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added' || change.type === 'modified') {
@@ -850,14 +871,16 @@ export function listenToFirestoreIncidents(onIncidentCallback, onError) {
           if (!incData.created_at && incData.createdAt) {
             incData.created_at = incData.createdAt;
           }
-          console.log(`%c[SOS:Firestore] Real-time snapshot event [${change.type}]: ${incData.id}`, 'color:#8b5cf6;font-weight:bold', incData);
-          if (onIncidentCallback) onIncidentCallback(incData, change.type);
+          const changeType = isInitialSnapshot ? 'initial' : change.type;
+          console.log(`%c[SOS:Firestore] Real-time snapshot event [${changeType}]: ${incData.id}`, 'color:#8b5cf6;font-weight:bold', incData);
+          if (onIncidentCallback) onIncidentCallback(incData, changeType);
         } else if (change.type === 'removed') {
           const incData = change.doc.data() || { id: change.doc.id };
           console.log(`%c[SOS:Firestore] Real-time snapshot event [removed]: ${incData.id || change.doc.id}`, 'color:#ef4444;font-weight:bold');
           if (onIncidentCallback) onIncidentCallback(incData, 'removed');
         }
       });
+      isInitialSnapshot = false;
     }, (err) => {
       console.warn('[SOS:Firestore] Snapshot listener notice:', err.message);
       if (onError) onError(err);

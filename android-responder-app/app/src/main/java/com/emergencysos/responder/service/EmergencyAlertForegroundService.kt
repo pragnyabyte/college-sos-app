@@ -86,9 +86,11 @@ class EmergencyAlertForegroundService : Service() {
         if (firestoreListener == null) {
             try {
                 val repo = FirebaseRepository.getInstance(applicationContext)
+                val prefs = PreferencesManager.getInstance(applicationContext)
                 firestoreListener = repo.listenToIncidents(
                     onUpdate = { allIncidents, newlyAdded ->
-                        if (newlyAdded != null && !alertedIncidentIds.contains(newlyAdded.id)) {
+                        if (newlyAdded != null && !prefs.isIncidentAlerted(newlyAdded.id)) {
+                            prefs.markIncidentAlerted(newlyAdded.id)
                             alertedIncidentIds.add(newlyAdded.id)
                             val locStr = listOf(
                                 newlyAdded.location?.building,
