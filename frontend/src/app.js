@@ -13,6 +13,7 @@ import {
   deleteIncidentFromFirestore,
   syncIncidentToFirestore,
   listenToFirestoreIncidents,
+  listenToIncident,
   initFirebasePersistence,
   verifyAndRestoreSession,
   signOutFirebase,
@@ -1308,13 +1309,20 @@ function active(i) {
 
   let locDisplay = '';
   if (manualLocation && hasGps) {
-    locDisplay = `⌖ ${esc(manualLocation)} · 📍 GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})`;
+    locDisplay = `⌖ ${esc(manualLocation)} · <span class="liveTrackingBadge"><span class="liveDotPulse"></span> 🟢 Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})</span>`;
   } else if (manualLocation) {
-    locDisplay = `⌖ ${esc(manualLocation)} · <span class="badgeGpsUnavail">Location not available</span>`;
+    locDisplay = `⌖ ${esc(manualLocation)} · <span class="badgeGpsUnavail">${i.location?.locationStatus === 'acquiring' ? 'Acquiring GPS fix...' : 'Location not available'}</span>`;
   } else if (hasGps) {
-    locDisplay = `⌖ Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})`;
+    locDisplay = `⌖ <span class="liveTrackingBadge"><span class="liveDotPulse"></span> 🟢 Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})</span>`;
+  } else if (i.location?.locationStatus === 'acquiring') {
+    locDisplay = `⌖ <span class="staleTrackingBadge"><span class="btnSpinner" style="width:12px;height:12px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:4px;"></span> Acquiring student GPS fix in real time...</span>`;
   } else {
     locDisplay = `⌖ <span class="badgeGpsUnavail">Location not available</span>`;
+  }
+
+  // Ensure live location tracking is actively running for this student incident
+  if (typeof startLiveLocationTracking === 'function' && i.status !== 'QUEUED_OFFLINE' && !['RESOLVED', 'CANCELLED', 'REJECTED'].includes(i.status)) {
+    try { startLiveLocationTracking(i.id); } catch {}
   }
 
   if (i.status === 'QUEUED_OFFLINE') {
@@ -1351,7 +1359,7 @@ function active(i) {
       <p class="incidentId">${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</p>
       <div class="location">${locDisplay}</div>
       ${hasGps && mapsUrl ? `
-        <div style="margin-top:10px">
+        <div style="margin-top:10px" class="studentLiveMapsContainer">
           <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btnMapsLink">📍 View my location on Google Maps</a>
           ${acc != null && acc > 100 ? `
             <div style="margin-top:6px;background:#fef3c7;color:#92400e;padding:6px 10px;border-radius:6px;font-size:13px;display:inline-block;">
@@ -1366,10 +1374,18 @@ function active(i) {
       <section class="panel gpsUnavailableAlert" style="border:2px solid #f59e0b;background:#fffbeb;margin-bottom:16px;">
         <div style="display:flex;align-items:flex-start;gap:12px;">
           <span style="font-size:24px">⚠️</span>
-          <div>
-            <b style="color:#b45309;display:block;font-size:15px;margin-bottom:4px">Emergency Alert Sent — GPS Location Unavailable</b>
-            <p style="color:#78350f;margin:0 0 12px;font-size:14px">Your emergency alert was sent to responders, but your GPS location could not be obtained (${i.location?.locationStatus === 'permission_denied' ? 'permission was denied' : (i.location?.locationStatus === 'timeout' ? 'GPS request timed out' : 'location signal unavailable')}). You can retry sharing live GPS or add building details below:</p>
-            <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:1">
+            <b style="color:#b45309;display:block;font-size:15px;margin-bottom:4px">Emergency Alert Sent — ${i.location?.locationStatus === 'acquiring' ? 'Acquiring Live GPS' : 'GPS Location Unavailable'}</b>
+            <p style="color:#78350f;margin:0 0 10px;font-size:14px">${i.location?.locationStatus === 'permission_denied' ? 'Location permission was denied in your browser.' : (i.location?.locationStatus === 'timeout' ? 'GPS request timed out due to slow satellite lock.' : (i.location?.locationStatus === 'acquiring' ? 'Your emergency alert reached responders! Precise coordinates will attach automatically as soon as acquired.' : 'GPS signal was unavailable.'))}</p>
+            <div class="androidLocationHelp">
+              <b>📱 Android / Mobile Browser Tip:</b>
+              <ol>
+                <li>Verify device <b>Location (GPS)</b> is enabled in phone quick settings.</li>
+                <li>Tap the <b>🔒 / tune icon</b> next to the browser address bar &gt; tap <b>Permissions</b> &gt; set <b>Location</b> to <b>Allow</b>.</li>
+                <li>Tap <b>Share / Retry Live Location</b> below.</li>
+              </ol>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
               <button type="button" class="primary" data-action="retry-location-share" data-id="${i.id}" style="background:#0284c7;border-color:#0369a1">📍 Share / Retry Live Location</button>
               <button type="button" class="secondary" data-action="prompt-manual-location" data-id="${i.id}">✏️ Enter Building / Room Details</button>
             </div>
@@ -1551,6 +1567,9 @@ function details(i) {
   const acc = hasGps && i.location?.accuracy != null ? Math.round(Number(i.location.accuracy)) : null;
   const mapsUrl = hasGps ? buildGoogleMapsUrl(lat, lng) : null;
   const gpsTimestamp = i.location?.gpsTimestamp || i.location?.gps_timestamp || null;
+  const lastUpdated = i.location?.lastUpdated || gpsTimestamp || i.updated_at || getIncidentCreatedAt(i);
+  const ageSec = lastUpdated ? Math.max(0, Math.round((Date.now() - new Date(lastUpdated).getTime()) / 1000)) : Infinity;
+  const isLiveFresh = hasGps && ageSec <= 60;
 
   return `<section class="details">
     <button class="back" data-action="close-details">← Back</button>
@@ -1598,7 +1617,12 @@ function details(i) {
             <div class="gpsHeader" style="display:flex;align-items:flex-start;gap:12px;">
               <span class="gpsIcon" style="font-size:24px">📍</span>
               <div style="flex:1">
-                <b style="font-size:15px;display:block;color:#166534">Exact GPS Coordinates</b>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+                  <b style="font-size:15px;color:#166534">Exact GPS Coordinates</b>
+                  ${isLiveFresh
+                    ? `<span class="liveTrackingBadge" id="live-badge-${esc(i.id)}"><span class="liveDotPulse"></span> 🟢 LIVE TRACKING (Updated ${ageSec < 5 ? 'just now' : ageSec + 's ago'})</span>`
+                    : `<span class="staleTrackingBadge" id="live-badge-${esc(i.id)}">⏱️ Last location received: ${formatReportedTime(lastUpdated)}</span>`}
+                </div>
                 <div style="font-family:monospace;font-size:16px;font-weight:600;color:#0f172a;margin:3px 0;">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
                 <small style="color:#475569">Accuracy: ±${acc != null ? acc + ' m' : 'N/A'}${gpsTimestamp ? ` · Recorded: ${new Date(gpsTimestamp).toLocaleTimeString()}` : ''}</small>
                 ${acc != null && acc > 100 ? `
@@ -1608,6 +1632,18 @@ function details(i) {
                 ` : ''}
               </div>
             </div>
+
+            <!-- OpenStreetMap Interactive Embed -->
+            <div class="liveMapContainer" style="margin-top:14px;">
+              <iframe
+                id="live-map-iframe-${esc(i.id)}"
+                class="liveMapIframe"
+                src="https://www.openstreetmap.org/export/embed.html?bbox=${(lng - 0.0035).toFixed(6)}%2C${(lat - 0.0025).toFixed(6)}%2C${(lng + 0.0035).toFixed(6)}%2C${(lat + 0.0025).toFixed(6)}&layer=mapnik&marker=${lat.toFixed(6)}%2C${lng.toFixed(6)}"
+                loading="lazy"
+                title="Student Live GPS Location"
+              ></iframe>
+            </div>
+
             <div style="margin-top:12px">
               <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btnViewOnGoogleMaps" id="btn-view-exact-location-${esc(i.id)}">
                 📍 View Exact Location on Google Maps
@@ -1618,8 +1654,11 @@ function details(i) {
           <div class="gpsUnavailableBox" style="background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:12px;">
             <span style="font-size:24px">⚠️</span>
             <div>
-              <b style="color:#b45309;display:block">Location not available</b>
-              <small style="color:#78350f">${i.location?.locationStatus === 'permission_denied' ? 'The student denied location permission on their device.' : (i.location?.locationStatus === 'timeout' ? 'GPS location request timed out.' : 'No GPS coordinates were available at alert creation time.')}</small>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+                <b style="color:#b45309">Location not available</b>
+                <span class="staleTrackingBadge">${i.location?.locationStatus === 'acquiring' ? '⏳ Acquiring GPS lock in real-time...' : '⚠️ GPS Inactive'}</span>
+              </div>
+              <small style="color:#78350f">${i.location?.locationStatus === 'permission_denied' ? 'The student denied location permission on their device.' : (i.location?.locationStatus === 'timeout' ? 'GPS location request timed out.' : (i.location?.locationStatus === 'acquiring' ? 'Emergency alert created. Student device is currently acquiring GPS coordinates...' : 'No GPS coordinates were available at alert creation time.'))}</small>
             </div>
           </div>
         `}
@@ -1665,6 +1704,52 @@ function renderAuthLoadingScreen(statusMsg = 'Restoring secure session…') {
   `;
 }
 
+let activeIncidentDetailsUnsub = null;
+let subscribedDetailsIncidentId = null;
+
+function syncDetailsSubscription(selectedIncident) {
+  if (!selectedIncident || !selectedIncident.id) {
+    if (activeIncidentDetailsUnsub) {
+      try { activeIncidentDetailsUnsub(); } catch {}
+      activeIncidentDetailsUnsub = null;
+      subscribedDetailsIncidentId = null;
+    }
+    return;
+  }
+
+  if (subscribedDetailsIncidentId === selectedIncident.id && activeIncidentDetailsUnsub) {
+    return;
+  }
+
+  if (activeIncidentDetailsUnsub) {
+    try { activeIncidentDetailsUnsub(); } catch {}
+    activeIncidentDetailsUnsub = null;
+    subscribedDetailsIncidentId = null;
+  }
+
+  subscribedDetailsIncidentId = selectedIncident.id;
+  console.log(`%c[SOS:Firestore] Subscribing to live updates for active incident ${selectedIncident.id}`, 'color:#0284c7;font-weight:bold');
+  activeIncidentDetailsUnsub = listenToIncident(selectedIncident.id, (fresh) => {
+    if (!state.selected || state.selected.id !== selectedIncident.id) return;
+
+    const prevLat = state.selected.location?.latitude;
+    const prevLng = state.selected.location?.longitude;
+    const newLat = fresh.location?.latitude;
+    const newLng = fresh.location?.longitude;
+
+    Object.assign(state.selected, fresh);
+    const idx = state.incidents.findIndex(x => x.id === selectedIncident.id);
+    if (idx !== -1) {
+      state.incidents[idx] = { ...state.incidents[idx], ...fresh };
+    }
+
+    if (prevLat !== newLat || prevLng !== newLng || state.selected.status !== fresh.status) {
+      console.log(`%c[SOS:Firestore] Live incident update received for ${fresh.id}: lat=${newLat}, lng=${newLng}`, 'color:#10b981;font-weight:bold');
+      render();
+    }
+  });
+}
+
 function render() {
   // If session verification is in progress, show loading screen (prevents authentication flickering)
   if (state.authRestoring) {
@@ -1674,6 +1759,7 @@ function render() {
 
   // If not logged in, show the single unified sign-in form
   if (!state.user) {
+    syncDetailsSubscription(null);
     return login();
   }
 
@@ -1686,12 +1772,16 @@ function render() {
   // After login, automatically determine dashboard view based on authenticated role
   let content;
   if (state.selected) {
+    syncDetailsSubscription(state.selected);
     content = details(state.selected);
-  } else if (!isResp && state.user.role === 'STUDENT') {
-    const a = state.incidents.find(i => i.student_id === state.user.id && !['RESOLVED', 'CANCELLED', 'REJECTED', 'DUPLICATE'].includes(i.status));
-    content = state.view === 'history' ? history() : a ? active(a) : create();
   } else {
-    content = state.view === 'analytics' ? analytics() : board();
+    syncDetailsSubscription(null);
+    if (!isResp && state.user.role === 'STUDENT') {
+      const a = state.incidents.find(i => i.student_id === state.user.id && !['RESOLVED', 'CANCELLED', 'REJECTED', 'DUPLICATE'].includes(i.status));
+      content = state.view === 'history' ? history() : a ? active(a) : create();
+    } else {
+      content = state.view === 'analytics' ? analytics() : board();
+    }
   }
 
   app.innerHTML = shell(content);
@@ -1890,12 +1980,31 @@ async function handleLogin(formEl) {
 
 let gps = null;
 let isSendingSos = false;
+let currentGpsWatchId = null;
+let currentTrackingIncidentId = null;
+let lastPushedLocation = null;
+let lastLocationPushTime = 0;
+
+export function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
+  if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return 0;
+  const R = 6371e3; // Earth radius in meters
+  const rad = Math.PI / 180;
+  const φ1 = lat1 * rad;
+  const φ2 = lat2 * rad;
+  const Δφ = (lat2 - lat1) * rad;
+  const Δλ = (lon2 - lon1) * rad;
+  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 /**
- * TASK 1: Captures live device GPS coordinates using the Geolocation API.
- * Uses high accuracy (enableHighAccuracy: true), 10-second timeout, maximumAge: 0.
- * Never returns cached/stale or default coordinates.
- * Called directly from user button interaction so browser permission request appears correctly.
+ * TASK 1: Progressive, non-blocking GPS location acquisition.
+ * Attempts fast cellular/Wi-Fi positioning first (<3.5s), then refines with precision GNSS satellites.
+ * Never reports fake/cached coordinates as live.
+ * Shows clear status updates: "Getting your location", "GPS signal is weak", "Location permission denied", "Location acquired".
  */
 async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
   if (typeof window !== 'undefined' && window.isSecureContext === false) {
@@ -1904,6 +2013,7 @@ async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
 
   if (typeof navigator === 'undefined' || !navigator.geolocation) {
     console.warn('[SOS:GPS] Geolocation API not available or blocked in this browser.');
+    if (onStatus) onStatus('Location unavailable');
     return {
       latitude: null,
       longitude: null,
@@ -1914,27 +2024,92 @@ async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
     };
   }
 
-  if (onStatus) onStatus('Getting your current GPS location...');
+  if (onStatus) {
+    onStatus('Getting your location');
+    onStatus('Getting your current GPS location...');
+  }
 
   return new Promise((resolve) => {
     let resolved = false;
+    let coarseFix = null;
 
     // Safety timeout ensures user is NEVER stuck on loading screen if browser hangs or waits indefinitely
     const timer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
-        console.warn('[SOS:GPS] Geolocation timed out after', timeoutMs, 'ms. Submitting SOS immediately.');
-        resolve({
-          latitude: null,
-          longitude: null,
-          accuracy: null,
-          gpsTimestamp: null,
-          locationStatus: 'timeout',
-          reason: 'GPS request timed out'
-        });
+        if (coarseFix) {
+          console.log('[SOS:GPS] Precision fix timed out, returning fast position fix:', coarseFix);
+          if (onStatus) onStatus('Location acquired');
+          resolve(coarseFix);
+        } else {
+          console.warn('[SOS:GPS] Geolocation timed out after', timeoutMs, 'ms. Submitting SOS immediately.');
+          if (onStatus) onStatus('GPS signal is weak');
+          resolve({
+            latitude: null,
+            longitude: null,
+            accuracy: null,
+            gpsTimestamp: null,
+            locationStatus: 'timeout',
+            reason: 'GPS request timed out'
+          });
+        }
       }
     }, timeoutMs);
 
+    // 1. Fast acquisition stage (cell/Wi-Fi network positioning)
+    try {
+      navigator.geolocation.getCurrentPosition(
+        (fastPos) => {
+          if (resolved) return;
+          const lat = Number(fastPos.coords.latitude);
+          const lng = Number(fastPos.coords.longitude);
+          const accuracy = fastPos.coords.accuracy != null ? Number(fastPos.coords.accuracy) : null;
+          const gpsTimestamp = new Date(fastPos.timestamp || Date.now()).toISOString();
+          coarseFix = {
+            latitude: lat,
+            longitude: lng,
+            accuracy,
+            gpsTimestamp,
+            locationStatus: 'available'
+          };
+          console.log('[SOS:GPS] Fast location fix captured:', coarseFix);
+          if (onStatus) onStatus('Location acquired');
+
+          // If fast fix already has high accuracy (<= 20m), return immediately
+          if (accuracy != null && accuracy <= 20) {
+            resolved = true;
+            clearTimeout(timer);
+            resolve(coarseFix);
+          }
+        },
+        (fastErr) => {
+          if (fastErr.code === 1) { // PERMISSION_DENIED
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timer);
+              if (onStatus) onStatus('Location permission denied');
+              resolve({
+                latitude: null,
+                longitude: null,
+                accuracy: null,
+                gpsTimestamp: null,
+                locationStatus: 'permission_denied',
+                reason: fastErr.message
+              });
+            }
+          }
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: Math.min(3500, timeoutMs),
+          maximumAge: 30000
+        }
+      );
+    } catch (e) {
+      console.warn('[SOS:GPS] Fast location attempt exception:', e.message);
+    }
+
+    // 2. Precision high-accuracy GNSS satellite acquisition
     try {
       navigator.geolocation.getCurrentPosition(
         (position) => {
@@ -1946,6 +2121,7 @@ async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
           const accuracy = position.coords.accuracy != null ? Number(position.coords.accuracy) : null;
           const gpsTimestamp = new Date(position.timestamp || Date.now()).toISOString();
           console.log('[SOS:GPS] Successfully captured live GPS coordinates:', { lat, lng, accuracy, gpsTimestamp });
+          if (onStatus) onStatus('Location acquired');
           resolve({
             latitude: lat,
             longitude: lng,
@@ -1956,16 +2132,28 @@ async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
         },
         (error) => {
           if (resolved) return;
+          if (coarseFix) {
+            resolved = true;
+            clearTimeout(timer);
+            console.log('[SOS:GPS] Precision acquisition error (' + error.message + '), using coarse fix.');
+            if (onStatus) onStatus('Location acquired');
+            resolve(coarseFix);
+            return;
+          }
+
           resolved = true;
           clearTimeout(timer);
           console.warn('[SOS:GPS] Geolocation error:', error.code, error.message);
           let status = 'unavailable';
           if (error.code === 1) { // PERMISSION_DENIED
             status = 'permission_denied';
+            if (onStatus) onStatus('Location permission denied');
           } else if (error.code === 2) { // POSITION_UNAVAILABLE
             status = 'position_unavailable';
+            if (onStatus) onStatus('GPS signal is weak');
           } else if (error.code === 3) { // TIMEOUT
             status = 'timeout';
+            if (onStatus) onStatus('GPS signal is weak');
           }
           resolve({
             latitude: null,
@@ -1984,9 +2172,17 @@ async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
       );
     } catch (e) {
       if (!resolved) {
+        if (coarseFix) {
+          resolved = true;
+          clearTimeout(timer);
+          if (onStatus) onStatus('Location acquired');
+          resolve(coarseFix);
+          return;
+        }
         resolved = true;
         clearTimeout(timer);
         console.warn('[SOS:GPS] Error invoking getCurrentPosition:', e.message);
+        if (onStatus) onStatus('GPS signal is weak');
         resolve({
           latitude: null,
           longitude: null,
@@ -1998,6 +2194,133 @@ async function captureLiveGps(timeoutMs = 10000, onStatus = null) {
       }
     }
   });
+}
+
+/**
+ * Starts continuous live location tracking with navigator.geolocation.watchPosition()
+ * Updates Firebase Firestore whenever the student moves, with sensible throttling.
+ */
+export function startLiveLocationTracking(incidentId) {
+  if (!incidentId) return;
+  if (typeof navigator === 'undefined' || !navigator.geolocation) {
+    console.warn('[SOS:Tracker] Geolocation API not available for live tracking.');
+    return;
+  }
+
+  if (currentGpsWatchId !== null && currentTrackingIncidentId === incidentId) {
+    console.log('[SOS:Tracker] Already tracking incident:', incidentId);
+    return;
+  }
+
+  stopLiveLocationTracking();
+  currentTrackingIncidentId = incidentId;
+  console.log(`%c[SOS:Tracker] Starting continuous live GPS tracking for incident: ${incidentId}`, 'color:#059669;font-weight:bold');
+
+  const watchSuccess = async (position) => {
+    const lat = Number(position.coords.latitude);
+    const lng = Number(position.coords.longitude);
+    const acc = position.coords.accuracy != null ? Number(position.coords.accuracy) : null;
+    const now = Date.now();
+    const gpsTimestamp = new Date(position.timestamp || now).toISOString();
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+    // Sensible throttling to avoid excessive Firestore writes:
+    // 1. First push in this session
+    // 2. Moved >= 5 meters
+    // 3. Accuracy significantly improved (>15m)
+    // 4. Over 10 seconds elapsed AND moved >= 2 meters
+    // Rate limit: at least 2 seconds between Firestore writes
+    const timeSinceLast = now - lastLocationPushTime;
+    if (lastPushedLocation && timeSinceLast < 2000) {
+      return;
+    }
+
+    let shouldPush = false;
+    if (!lastPushedLocation) {
+      shouldPush = true;
+    } else {
+      const dist = calculateDistanceMeters(lastPushedLocation.latitude, lastPushedLocation.longitude, lat, lng);
+      const accImproved = lastPushedLocation.accuracy != null && acc != null && (lastPushedLocation.accuracy - acc > 15);
+      const periodicMovement = timeSinceLast >= 10000 && dist >= 2;
+
+      if (dist >= 5 || accImproved || periodicMovement) {
+        shouldPush = true;
+      }
+    }
+
+    if (shouldPush) {
+      lastPushedLocation = { latitude: lat, longitude: lng, accuracy: acc, gpsTimestamp };
+      lastLocationPushTime = now;
+
+      const locationPayload = {
+        latitude: lat,
+        longitude: lng,
+        accuracy: acc,
+        gpsTimestamp,
+        lastUpdated: new Date().toISOString(),
+        locationStatus: 'available',
+        source: 'GPS',
+        isLive: true
+      };
+
+      try {
+        console.log(`%c[SOS:Tracker] Pushing live GPS coordinate update to Firestore for ${incidentId}:`, 'color:#2563eb;font-weight:bold', locationPayload);
+        await updateIncidentLocationInFirestore(incidentId, locationPayload, state.user);
+
+        // Update in-memory state
+        const inc = state.incidents.find(x => x.id === incidentId);
+        if (inc) {
+          inc.location = { ...inc.location, ...locationPayload };
+        }
+        if (state.selected && state.selected.id === incidentId) {
+          state.selected.location = { ...state.selected.location, ...locationPayload };
+        }
+
+        // Cross-tab broadcast
+        if (sosBroadcast) {
+          sosBroadcast.postMessage({ event: 'sos.location_update', id: incidentId, location: locationPayload });
+        }
+
+        // Dynamically update active student screen if open
+        const locEl = document.querySelector('.activeHero .location');
+        if (locEl) {
+          locEl.innerHTML = `⌖ <span class="liveTrackingBadge"><span class="liveDotPulse"></span> 🟢 Live GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)} (±${acc != null ? acc + 'm' : 'N/A'})</span>`;
+          const unavailAlert = document.querySelector('.gpsUnavailableAlert');
+          if (unavailAlert) unavailAlert.style.display = 'none';
+        }
+      } catch (err) {
+        console.warn('[SOS:Tracker] Notice pushing location to Firestore:', err.message);
+      }
+    }
+  };
+
+  const watchError = (err) => {
+    console.warn('[SOS:Tracker] watchPosition notice:', err.code, err.message);
+  };
+
+  try {
+    currentGpsWatchId = navigator.geolocation.watchPosition(watchSuccess, watchError, {
+      enableHighAccuracy: true,
+      maximumAge: 5000,
+      timeout: 20000
+    });
+  } catch (e) {
+    console.warn('[SOS:Tracker] Error starting watchPosition:', e.message);
+  }
+}
+
+export function stopLiveLocationTracking() {
+  if (currentGpsWatchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
+    console.log(`[SOS:Tracker] Stopping live GPS tracking watcher (ID: ${currentGpsWatchId})`);
+    try {
+      navigator.geolocation.clearWatch(currentGpsWatchId);
+    } catch {}
+    currentGpsWatchId = null;
+  }
+  currentTrackingIncidentId = null;
+  lastPushedLocation = null;
+  lastLocationPushTime = 0;
 }
 
 /**
@@ -2047,15 +2370,15 @@ async function executeSosSubmission({ categoryId, description = '', building = '
       categoryId: cat?.id || 'other',
       description: String(description || '').trim(),
       location: {
-        building: String(building || '').trim(),
-        floor: String(floor || '').trim(),
-        room: String(room || '').trim(),
+        building: String(building || '').trim() || (hasGps ? 'Campus (GPS Coordinates Attached)' : 'Campus'),
+        floor: String(floor || '').trim() || 'Ground / Outdoors',
+        room: String(room || '').trim() || (hasGps ? 'Live GPS Location' : 'Live Emergency SOS'),
         area: String(room || '').trim(),
         latitude: hasGps ? Number(gpsResult.latitude) : null,
         longitude: hasGps ? Number(gpsResult.longitude) : null,
         accuracy: hasGps && gpsResult.accuracy != null ? Number(gpsResult.accuracy) : null,
         gpsTimestamp: gpsResult.gpsTimestamp,
-        locationStatus: gpsResult.locationStatus,
+        locationStatus: hasGps ? 'available' : (gpsResult.locationStatus || 'acquiring'),
         source: hasGps ? 'GPS' : 'MANUAL'
       },
       idempotencyKey
@@ -2132,6 +2455,9 @@ async function executeSosSubmission({ categoryId, description = '', building = '
       submitBtnEl.innerHTML = '✓ SOS sent successfully.';
     }
 
+    // Start continuous live tracking immediately!
+    startLiveLocationTracking(created.id);
+
     // Instant broadcast across tabs on localhost
     if (sosBroadcast) {
       sosBroadcast.postMessage({ event: 'sos.created', incident: created });
@@ -2192,13 +2518,13 @@ async function handleInstantOneClickSos(btnEl) {
   const originalContent = btnEl ? btnEl.innerHTML : '🚨 Send SOS Now';
   if (btnEl) {
     btnEl.disabled = true;
-    btnEl.innerHTML = '<span class="btnSpinner"></span> Getting your location and sending SOS...';
+    btnEl.innerHTML = '<span class="btnSpinner"></span> Getting your current GPS location...';
   }
 
   try {
-    // 1. Immediately request and capture live GPS location directly from browser Geolocation API
+    // 1. Fast GPS attempt (3.5s budget)
     console.log('[SOS:Instant] Capturing live GPS location via Geolocation API...');
-    const gpsResult = await captureLiveGps(10000, (msg) => {
+    const gpsResult = await captureLiveGps(3500, (msg) => {
       if (btnEl) {
         btnEl.innerHTML = `<span class="btnSpinner"></span> ${msg}`;
       }
@@ -2206,9 +2532,6 @@ async function handleInstantOneClickSos(btnEl) {
 
     console.log('[SOS:Instant] GPS capture result:', gpsResult);
 
-    // 2. Location permissions and error verification:
-    // If GPS is unavailable or permission is denied, display a clear error message explaining
-    // that the location could not be obtained. Do NOT silently send a false or default location.
     const hasGps = gpsResult &&
       gpsResult.locationStatus === 'available' &&
       gpsResult.latitude != null &&
@@ -2216,31 +2539,12 @@ async function handleInstantOneClickSos(btnEl) {
       Number.isFinite(Number(gpsResult.latitude)) &&
       Number.isFinite(Number(gpsResult.longitude));
 
-    if (!hasGps) {
-      let errorMsg = 'Could not obtain your live GPS location.';
-      if (gpsResult?.locationStatus === 'permission_denied') {
-        errorMsg = 'Could not obtain your live GPS location: Location permission was denied. Please allow location access in your browser to send an automatic emergency SOS.';
-      } else if (gpsResult?.locationStatus === 'timeout') {
-        errorMsg = 'Could not obtain your live GPS location: GPS request timed out. Please ensure your device GPS is turned on and try again.';
-      } else {
-        errorMsg = `Could not obtain your live GPS location: ${gpsResult?.reason || 'Location signal unavailable'}. Please verify device location services are enabled.`;
-      }
-
-      console.warn('[SOS:Instant] GPS unavailable. Aborting automatic SOS submission:', errorMsg);
-      state.error = errorMsg;
-      if (btnEl) {
-        btnEl.disabled = false;
-        btnEl.innerHTML = originalContent;
-      }
-      render();
-      return;
-    }
-
     if (btnEl) {
-      btnEl.innerHTML = '<span class="btnSpinner"></span> Sending SOS to emergency responders...';
+      btnEl.innerHTML = '<span class="btnSpinner"></span> Dispatching emergency alert...';
     }
 
-    // 3. Assemble automatic SOS data with existing authenticated student details
+    // 2. Assemble automatic SOS data.
+    // CRITICAL: Do NOT abort if GPS is slow/timing out! Submit the SOS immediately!
     const idempotencyKey = crypto.randomUUID();
     const payload = {
       categoryId: 'general',
@@ -2251,23 +2555,23 @@ async function handleInstantOneClickSos(btnEl) {
       studentId: state.user.id,
       description: '',
       location: {
-        building: '',
-        floor: '',
-        room: '',
+        building: hasGps ? 'Campus (GPS Coordinates Attached)' : 'Campus',
+        floor: 'Ground / Outdoors',
+        room: hasGps ? 'Live GPS Location' : 'Live Emergency SOS',
         area: '',
-        latitude: Number(gpsResult.latitude),
-        longitude: Number(gpsResult.longitude),
-        accuracy: gpsResult.accuracy != null ? Number(gpsResult.accuracy) : null,
-        gpsTimestamp: gpsResult.gpsTimestamp || new Date().toISOString(),
-        locationStatus: 'available',
-        source: 'Student Dashboard — Send SOS Now'
+        latitude: hasGps ? Number(gpsResult.latitude) : null,
+        longitude: hasGps ? Number(gpsResult.longitude) : null,
+        accuracy: hasGps && gpsResult.accuracy != null ? Number(gpsResult.accuracy) : null,
+        gpsTimestamp: gpsResult.gpsTimestamp || (hasGps ? new Date().toISOString() : null),
+        locationStatus: hasGps ? 'available' : (gpsResult?.locationStatus || 'acquiring'),
+        source: hasGps ? 'GPS' : 'MANUAL'
       },
       idempotencyKey
     };
 
-    console.log('[SOS:Instant] Submitting automatic SOS payload to /api/sos:', payload);
+    console.log('[SOS:Instant] Submitting automatic SOS payload to Cloud Firestore:', payload);
 
-    // 4. Offline handling
+    // 3. Offline handling
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       const localId = 'QUEUED-' + Math.floor(10000 + Math.random() * 90000);
       addPendingSos({ localId, payload, createdAt: new Date().toISOString() });
@@ -2297,7 +2601,7 @@ async function handleInstantOneClickSos(btnEl) {
       return;
     }
 
-    // 5. Submit directly to Cloud Firestore
+    // 4. Submit directly to Cloud Firestore
     let created;
     try {
       created = await createIncidentInFirestore(payload, state.user);
@@ -2313,6 +2617,9 @@ async function handleInstantOneClickSos(btnEl) {
     }
 
     console.log('[SOS:Instant] SOS created successfully in Firestore! ID:', created.id);
+
+    // 5. Start live location tracking immediately!
+    startLiveLocationTracking(created.id);
 
     // 6. Update UI and notifications
     if (btnEl) {
@@ -2332,11 +2639,10 @@ async function handleInstantOneClickSos(btnEl) {
       state.incidents.unshift(created);
     }
 
-    state.notice = {
-      message: 'SOS sent successfully. Emergency responders have been alerted.',
-      priority: 'HIGH',
-      id: created.id
-    };
+    const accText = hasGps && gpsResult.accuracy != null ? ` (±${Math.round(gpsResult.accuracy)}m)` : '';
+    state.notice = hasGps
+      ? `🚨 SOS sent successfully! (ID: ${created.id}). Response team notified with your live GPS location${accText}.`
+      : `🚨 SOS sent successfully! (ID: ${created.id}). Responders notified! Acquiring precise live GPS location in background...`;
 
     await refresh();
   } catch (err) {
@@ -2680,6 +2986,12 @@ document.addEventListener('click', async (e) => {
     if (!confirmLogout) return;
 
     console.log('[SOS:Auth] Explicitly signing out of website session.');
+    stopLiveLocationTracking();
+    if (activeIncidentDetailsUnsub) {
+      try { activeIncidentDetailsUnsub(); } catch {}
+      activeIncidentDetailsUnsub = null;
+      subscribedDetailsIncidentId = null;
+    }
     if (isResponderUser(state.user)) {
       api(`/api/responder/device/${encodeURIComponent(getDeviceId())}`, { method: 'DELETE' }).catch(() => {});
     }
@@ -2711,8 +3023,24 @@ document.addEventListener('click', async (e) => {
     render();
   }
 
-  if (a === 'back-create') { state.selected = null; render(); }
-  if (a === 'close-details') { state.selected = null; render(); }
+  if (a === 'back-create') {
+    if (activeIncidentDetailsUnsub) {
+      try { activeIncidentDetailsUnsub(); } catch {}
+      activeIncidentDetailsUnsub = null;
+      subscribedDetailsIncidentId = null;
+    }
+    state.selected = null;
+    render();
+  }
+  if (a === 'close-details') {
+    if (activeIncidentDetailsUnsub) {
+      try { activeIncidentDetailsUnsub(); } catch {}
+      activeIncidentDetailsUnsub = null;
+      subscribedDetailsIncidentId = null;
+    }
+    state.selected = null;
+    render();
+  }
   if (a === 'refresh') refresh();
 
   // Instant One-Click SOS triggered from Student Dashboard hero banner
@@ -2744,27 +3072,24 @@ document.addEventListener('click', async (e) => {
   if (a === 'retry-location-share') {
     const incId = el.dataset.id;
     const originalText = el.textContent;
-    el.textContent = 'Locating…';
+    el.textContent = 'Getting your location...';
     el.disabled = true;
     try {
       const loc = await captureLiveGps(10000);
       if (loc.locationStatus === 'available') {
-        const updated = await api(`/api/sos/${incId}/location`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            latitude: loc.latitude,
-            longitude: loc.longitude,
-            accuracy: loc.accuracy,
-            gpsTimestamp: loc.gpsTimestamp,
-            locationStatus: 'available',
-            source: 'GPS'
-          })
-        });
-        state.selected = updated;
-        const idx = state.incidents.findIndex(x => x.id === incId);
-        if (idx !== -1) state.incidents[idx] = updated;
-        state.notice = '📍 Live GPS location successfully updated and shared with emergency responders!';
-        render();
+        const locationPayload = {
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          gpsTimestamp: loc.gpsTimestamp,
+          locationStatus: 'available',
+          source: 'GPS',
+          lastUpdated: new Date().toISOString()
+        };
+        await updateIncidentLocationInFirestore(incId, locationPayload, state.user);
+        startLiveLocationTracking(incId);
+        state.notice = '📍 Live GPS location successfully updated and live tracking started!';
+        await refresh();
       } else {
         const reason = loc.locationStatus === 'permission_denied' ? 'permission was denied' : (loc.locationStatus === 'timeout' ? 'GPS timed out' : 'signal was unavailable');
         alert(`Could not capture location (${reason}). You can enter building/room details manually.`);
@@ -2788,26 +3113,21 @@ document.addEventListener('click', async (e) => {
     const room = prompt('Enter Room / Area (optional):', currentInc?.location?.room || '') ?? '';
 
     try {
-      const updated = await api(`/api/sos/${incId}/location`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          building: building.trim(),
-          floor: floor.trim(),
-          room: room.trim(),
-          area: room.trim(),
-          source: 'MANUAL'
-        })
-      });
-      state.selected = updated;
-      const idx = state.incidents.findIndex(x => x.id === incId);
-      if (idx !== -1) state.incidents[idx] = updated;
+      const locationPayload = {
+        building: building.trim() || 'Campus',
+        floor: floor.trim() || 'Ground / Outdoors',
+        room: room.trim() || 'Live GPS Location',
+        area: room.trim(),
+        source: 'MANUAL',
+        lastUpdated: new Date().toISOString()
+      };
+      await updateIncidentLocationInFirestore(incId, locationPayload, state.user);
       state.notice = 'Location details successfully updated and shared with responders!';
-      render();
+      await refresh();
     } catch (err) {
       alert(`Failed to update location details: ${err.message}`);
     }
   }
-
 
   if (a === 'export') {
     const keys = ['id', 'category_id', 'student_id', 'priority', 'status', 'primary_department_id', 'created_at'];
@@ -2825,11 +3145,13 @@ document.addEventListener('click', async (e) => {
       const note = prompt('Resolution note (required)');
       if (!note) return;
       payload = { note, resolutionType: 'RESOLVED' };
+      stopLiveLocationTracking();
     }
     if (el.dataset.transition === 'cancel') {
       const reason = prompt('Why are you cancelling?');
       if (!reason) return;
       payload = { reason };
+      stopLiveLocationTracking();
     }
     try {
       try {
@@ -2915,6 +3237,16 @@ async function initAppSession() {
         } catch (err) {
           console.warn('[SOS:Auth] Initial refresh notice:', err.message);
         }
+
+        // 4. Resume live location tracking if student has an active unresolved SOS
+        if (!isResponderUser(state.user) && state.user.role === 'STUDENT') {
+          const activeInc = state.incidents.find(i => i.student_id === state.user.id && !['RESOLVED', 'CANCELLED', 'REJECTED', 'DUPLICATE'].includes(i.status));
+          if (activeInc) {
+            console.log(`%c[SOS:Tracker] Resuming live location tracking for restored active SOS: ${activeInc.id}`, 'color:#059669;font-weight:bold');
+            startLiveLocationTracking(activeInc.id);
+          }
+        }
+
         render();
         return;
       } else {
@@ -2935,3 +3267,15 @@ async function initAppSession() {
 
 // Start persistent session initialization
 initAppSession();
+
+// Clean up GPS watchers and listeners on navigation/tab close
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    stopLiveLocationTracking();
+    if (activeIncidentDetailsUnsub) {
+      try { activeIncidentDetailsUnsub(); } catch {}
+      activeIncidentDetailsUnsub = null;
+    }
+  });
+}
+

@@ -550,8 +550,8 @@ export async function createIncidentInFirestore(payload, user) {
     description: String(b.description || '').trim(),
     location: {
       building: building || (lat != null ? 'Campus (GPS Coordinates Attached)' : 'Campus'),
-      floor: floor || (lat != null ? 'Ground / Outdoors' : ''),
-      room: room || (lat != null ? 'Live GPS Location' : ''),
+      floor: floor || (lat != null ? 'Ground / Outdoors' : 'Ground / Outdoors'),
+      room: room || (lat != null ? 'Live GPS Location' : 'Live Emergency SOS'),
       area: String(loc.area || room || '').trim(),
       latitude: lat,
       longitude: lng,
@@ -663,21 +663,58 @@ export async function updateIncidentStatusInFirestore(incidentId, status, payloa
 }
 
 /**
- * Updates incident location in Cloud Firestore.
+ * Updates incident location in Cloud Firestore and preserves existing location details.
  */
 export async function updateIncidentLocationInFirestore(incidentId, location, user = null) {
   const db = getFirebaseFirestore();
   if (!db) throw new Error('Firebase Firestore service is not initialized');
 
   const docRef = doc(db, 'incidents', String(incidentId));
+  const snap = await getDoc(docRef);
+  const existing = snap.exists() ? snap.data() : null;
+  const existingLoc = existing?.location || {};
+
+  const mergedLocation = {
+    ...existingLoc,
+    ...location,
+    building: location.building || existingLoc.building || 'Campus',
+    floor: location.floor || existingLoc.floor || 'Ground / Outdoors',
+    room: location.room || existingLoc.room || 'Live GPS Location',
+    area: location.area || existingLoc.area || '',
+    lastUpdated: new Date().toISOString()
+  };
+
   const now = new Date().toISOString();
   const updates = {
-    location,
+    location: mergedLocation,
     updated_at: now
   };
   await setDoc(docRef, updates, { merge: true });
-  const snap = await getDoc(docRef);
-  return snap.data();
+  return { ...existing, ...updates };
+}
+
+/**
+ * Subscribes to real-time location and status updates for a specific incident document.
+ */
+export function listenToIncident(incidentId, onUpdateCallback, onError) {
+  try {
+    const db = getFirebaseFirestore();
+    if (!db) return () => {};
+    const docRef = doc(db, 'incidents', String(incidentId));
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (onUpdateCallback) onUpdateCallback(data);
+      }
+    }, (err) => {
+      console.warn('[SOS:Firestore] Single incident listener notice:', err.message);
+      if (onError) onError(err);
+    });
+    return unsubscribe;
+  } catch (err) {
+    console.warn('[SOS:Firestore] listenToIncident setup failed:', err.message);
+    return () => {};
+  }
 }
 
 /**
