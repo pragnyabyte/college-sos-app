@@ -19,6 +19,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 import android.content.Context
+import android.app.NotificationManager
+import android.os.Build
+import androidx.core.app.NotificationManagerCompat
+import com.emergencysos.responder.EmergencySosApp
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -53,6 +57,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         setupUI()
+        updateDeviceDiagnostics()
         EmergencyAlertForegroundService.startMonitor(this)
         registerNetworkMonitoring()
         loadIncidents()
@@ -61,6 +66,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        updateDeviceDiagnostics()
         startFirestoreListener()
         loadIncidents()
     }
@@ -170,6 +176,20 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, OnboardingActivity::class.java))
         }
 
+        binding.btnFixPermissions.setOnClickListener {
+            startActivity(Intent(this, OnboardingActivity::class.java))
+        }
+
+        binding.tvToggleDiagnostics.setOnClickListener {
+            if (binding.layoutDiagDetails.visibility == View.VISIBLE) {
+                binding.layoutDiagDetails.visibility = View.GONE
+                binding.tvToggleDiagnostics.text = "[Show]"
+            } else {
+                binding.layoutDiagDetails.visibility = View.VISIBLE
+                binding.tvToggleDiagnostics.text = "[Hide]"
+            }
+        }
+
         binding.btnLogout.setOnClickListener {
             confirmLogout()
         }
@@ -183,6 +203,60 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun updateDeviceDiagnostics() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val notifGranted = NotificationManagerCompat.from(this).areNotificationsEnabled()
+
+            val channelEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = nm?.getNotificationChannel(EmergencySosApp.CHANNEL_EMERGENCY_ID)
+                channel != null && channel.importance >= NotificationManager.IMPORTANCE_HIGH
+            } else {
+                true
+            }
+
+            val fullScreenAllowed = if (Build.VERSION.SDK_INT >= 34) {
+                nm?.canUseFullScreenIntent() == true
+            } else {
+                true
+            }
+
+            val dndGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                nm?.isNotificationPolicyAccessGranted == true
+            } else {
+                true
+            }
+
+            val missingPermissions = mutableListOf<String>()
+            if (!notifGranted) missingPermissions.add("Notifications Disabled")
+            if (!channelEnabled) missingPermissions.add("Emergency Channel Blocked")
+            if (!fullScreenAllowed) missingPermissions.add("Full-Screen Restricted")
+            if (!dndGranted) missingPermissions.add("DND Policy Access Missing")
+
+            if (missingPermissions.isNotEmpty()) {
+                binding.bannerMissingPermissions.visibility = View.VISIBLE
+                binding.tvMissingPermissionsText.text = "⚠️ Missing: ${missingPermissions.joinToString(", ")}"
+            } else {
+                binding.bannerMissingPermissions.visibility = View.GONE
+            }
+
+            binding.tvDiagNotif.text = if (notifGranted) "🟢 Enabled" else "🔴 Disabled"
+            binding.tvDiagNotif.setTextColor(if (notifGranted) 0xFF34D399.toInt() else 0xFFEF4444.toInt())
+
+            binding.tvDiagChannel.text = if (channelEnabled) "🟢 Siren Channel Active" else "🔴 Blocked / Low Priority"
+            binding.tvDiagChannel.setTextColor(if (channelEnabled) 0xFF34D399.toInt() else 0xFFEF4444.toInt())
+
+            binding.tvDiagFullScreen.text = if (fullScreenAllowed) "🟢 Full-Screen Allowed" else "⚠️ Background Only"
+            binding.tvDiagFullScreen.setTextColor(if (fullScreenAllowed) 0xFF34D399.toInt() else 0xFFFBBF24.toInt())
+
+            binding.tvDiagDnd.text = if (dndGranted) "🟢 DND Override Active" else "⚠️ Standard Ringer Only"
+            binding.tvDiagDnd.setTextColor(if (dndGranted) 0xFF34D399.toInt() else 0xFFFBBF24.toInt())
+
+            binding.tvDiagLastRegistration.text = prefs.lastSuccessfulRegistration
+            binding.tvDiagLastDeliveryAck.text = prefs.lastDeliveryAcknowledgment
+        } catch (_: Exception) {}
     }
 
     private var firestoreListener: com.google.firebase.firestore.ListenerRegistration? = null

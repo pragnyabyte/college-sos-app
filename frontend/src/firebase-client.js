@@ -1,6 +1,21 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage, isSupported } from 'firebase/messaging';
-import { getFirestore, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  doc,
+  setDoc,
+  getDoc,
+  getDocs,
+  deleteDoc,
+  onSnapshot,
+  collection,
+  query,
+  where,
+  orderBy
+} from 'firebase/firestore';
 import {
   getAuth,
   setPersistence,
@@ -8,6 +23,7 @@ import {
   indexedDBLocalPersistence,
   inMemoryPersistence,
   onAuthStateChanged,
+  signInAnonymously,
   signOut as firebaseSignOut
 } from 'firebase/auth';
 
@@ -90,6 +106,28 @@ export async function initFirebasePersistence() {
 }
 
 /**
+ * Ensures a valid persistent Firebase Auth user exists.
+ * Uses browserLocalPersistence so the user's session remains active
+ * across page refreshes, tab closures, and device reboots until explicit sign out.
+ */
+export async function ensureFirebaseAuthUser() {
+  const auth = getFirebaseAuth();
+  if (!auth) return null;
+  await initFirebasePersistence().catch(() => {});
+  if (auth.currentUser) {
+    return auth.currentUser;
+  }
+  try {
+    const cred = await signInAnonymously(auth);
+    console.log('%c[SOS:Auth] Firebase Auth persistent session established: ' + cred.user.uid, 'color:#10b981;font-weight:bold');
+    return cred.user;
+  } catch (err) {
+    console.warn('[SOS:Auth] Firebase signInAnonymously notice:', err.message);
+    return null;
+  }
+}
+
+/**
  * Registers an authentication state observer on the Firebase Auth instance.
  */
 export function onFirebaseAuthStateChanged(onUserChanged, onError) {
@@ -122,6 +160,7 @@ export async function signOutFirebase() {
  * Restores and verifies a saved session against trusted Cloud Firestore records.
  * NEVER trusts an unverified role or identity stored solely in localStorage.
  * Restores the correct role from Firestore-backed user data.
+ * CRITICAL: Retains valid session during offline or transient network drops.
  */
 export async function verifyAndRestoreSession(savedSession) {
   if (!savedSession || typeof savedSession !== 'object') return null;
@@ -130,6 +169,9 @@ export async function verifyAndRestoreSession(savedSession) {
   const claimedRole = String(savedSession.role || '').toUpperCase();
 
   if (!rawId || !claimedRole) return null;
+
+  // Re-establish Firebase Auth anonymous session if needed
+  ensureFirebaseAuthUser().catch(() => {});
 
   const db = getFirebaseFirestore();
 
@@ -162,18 +204,18 @@ export async function verifyAndRestoreSession(savedSession) {
         }
       }
     } catch (err) {
-      console.warn('[SOS:Auth] Responder Firestore verification notice (allowing offline session):', err.message);
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        return {
-          user: {
-            id: 'RESP-1111',
-            name: savedSession.name || 'Campus Emergency Response Unit (RESP-1111)',
-            role: 'RESPONDER',
-            departmentId: 'DEPT_SECURITY'
-          },
-          token: savedSession.token || `sos-resp-token-RESP-1111`
-        };
-      }
+      console.warn('[SOS:Auth] Responder Firestore verification notice (retaining session offline):', err.message);
+      // Retain responder session on any network error or offline state
+      return {
+        user: {
+          id: 'RESP-1111',
+          name: savedSession.name || 'Campus Emergency Response Unit (RESP-1111)',
+          role: 'RESPONDER',
+          departmentId: 'DEPT_SECURITY'
+        },
+        token: savedSession.token || `sos-resp-token-RESP-1111`,
+        offline: true
+      };
     }
 
     return {
@@ -217,19 +259,19 @@ export async function verifyAndRestoreSession(savedSession) {
         };
       }
     } catch (err) {
-      console.warn('[SOS:Auth] Student Firestore check notice (network/offline):', err.message);
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        return {
-          user: {
-            id: cleanId,
-            name: savedSession.name,
-            role: 'STUDENT',
-            departmentId: null,
-            accountId: savedSession.accountId || cleanId
-          },
-          token: savedSession.token || `sos-student-token-${cleanId}`
-        };
-      }
+      console.warn('[SOS:Auth] Student Firestore check notice (retaining session offline):', err.message);
+      // Retain student session on any network error or offline state - DO NOT silently log out!
+      return {
+        user: {
+          id: cleanId,
+          name: savedSession.name || 'Student',
+          role: 'STUDENT',
+          departmentId: savedSession.departmentId || null,
+          accountId: savedSession.accountId || cleanId
+        },
+        token: savedSession.token || `sos-student-token-${cleanId}`,
+        offline: true
+      };
     }
   }
 
@@ -324,7 +366,18 @@ let firestoreDb = null;
 export function getFirebaseFirestore() {
   if (!firestoreDb) {
     try {
-      firestoreDb = getFirestore(getFirebaseApp());
+      const fbApp = getFirebaseApp();
+      try {
+        if (typeof window !== 'undefined' && persistentLocalCache && persistentMultipleTabManager) {
+          firestoreDb = initializeFirestore(fbApp, {
+            localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+          });
+        } else {
+          firestoreDb = getFirestore(fbApp);
+        }
+      } catch {
+        firestoreDb = getFirestore(fbApp);
+      }
     } catch (e) {
       console.warn('[SOS:Firestore] Firestore client init notice:', e.message);
     }
@@ -435,6 +488,9 @@ export async function verifyStudentWithFirebase(regdNo, enteredName = null) {
     }
   }
 
+  // Ensure persistent Firebase Auth user exists
+  await ensureFirebaseAuthUser().catch(() => {});
+
   const user = {
     id: student.regdNo,
     name: student.name,
@@ -467,6 +523,9 @@ export async function verifyResponderWithFirebase(responderId, pin, enteredName 
   if (cleanPin !== '2026') {
     throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
   }
+
+  // Ensure persistent Firebase Auth user exists
+  await ensureFirebaseAuthUser().catch(() => {});
 
   const name = enteredName || 'Campus Emergency Response Unit (RESP-1111)';
   const user = {

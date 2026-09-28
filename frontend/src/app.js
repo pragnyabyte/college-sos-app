@@ -147,6 +147,8 @@ const state = {
   deviceStatus: safeStorage.get('sos-fcm-token') ? 'active' : 'pending',
   activeAlarm: null,
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+  isOfflineSession: false,
+  showExitPrompt: false,
   lastSyncTime: '',
   users: [],
   categories: defaultCategories,
@@ -215,12 +217,85 @@ if (sosBroadcast) {
           stopEmergencyAlarm();
         }
         if (deletedId) alertedSosIds.delete(deletedId);
-        if (deletedMongoId) alertedSosIds.delete(deletedMongoId);
         try { sessionStorage.setItem('sos_alerted_ids', JSON.stringify([...alertedSosIds])); } catch {}
         render();
       }
     }
   };
+}
+
+// SPA History Management & Android Back Button Protection
+let allowNextExit = false;
+
+export function pushNavState(viewName, detailsId = null) {
+  try {
+    if (typeof window === 'undefined' || !window.history) return;
+    const current = window.history.state;
+    if (current && current.view === viewName && current.detailsId === detailsId) {
+      return;
+    }
+    window.history.pushState(
+      { page: 'sos-dashboard', view: viewName, detailsId, ts: Date.now() },
+      '',
+      detailsId ? `?incidentId=${encodeURIComponent(detailsId)}` : window.location.pathname
+    );
+  } catch {}
+}
+
+export function handlePopState(e) {
+  // If not logged in, allow normal browser navigation
+  if (!state.user) return;
+
+  // If user explicitly confirmed leaving via the Exit button
+  if (allowNextExit) {
+    allowNextExit = false;
+    return;
+  }
+
+  // 1. If Exit Confirmation Modal is currently open, close it and stay on dashboard
+  if (state.showExitPrompt) {
+    state.showExitPrompt = false;
+    pushNavState(state.view || 'home', state.selected ? state.selected.id : null);
+    render();
+    return;
+  }
+
+  // 2. Sensible Navigation: If inside Incident Details view, close details and return to dashboard
+  if (state.selected != null) {
+    state.selected = null;
+    pushNavState(state.view || 'home', null);
+    render();
+    return;
+  }
+
+  // 3. Sensible Navigation: If on secondary tab (history, analytics), return to home tab
+  if (state.view !== 'home') {
+    state.view = 'home';
+    pushNavState('home', null);
+    render();
+    return;
+  }
+
+  // 4. On root dashboard: User pressed Android Back button while monitoring emergencies.
+  // DO NOT log out, DO NOT erase localStorage, DO NOT erase Firebase Auth.
+  // Show exit confirmation modal as required by PART 2.
+  state.showExitPrompt = true;
+  pushNavState('home', null); // Keeps history entry alive so browser tab doesn't close immediately
+  render();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('popstate', handlePopState);
+  window.addEventListener('beforeunload', (e) => {
+    if (state.user) {
+      const hasActive = state.incidents.some(i => !['RESOLVED', 'CANCELLED', 'REJECTED', 'DUPLICATE'].includes(i.status));
+      if (hasActive) {
+        e.preventDefault();
+        e.returnValue = 'Emergency monitoring active. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    }
+  });
 }
 
 // Offline SOS Queue Management (Local persistence & automatic recovery)
@@ -1704,6 +1779,27 @@ function renderAuthLoadingScreen(statusMsg = 'Restoring secure session…') {
   `;
 }
 
+function renderExitPromptModal() {
+  return `
+    <div class="exitModalBackdrop" id="exit-confirmation-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;">
+      <div class="exitModalCard" style="background:#0f172a;border:1px solid #334155;border-radius:16px;max-width:440px;width:100%;padding:24px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);text-align:center;">
+        <div style="font-size:36px;margin-bottom:12px;">🛡️</div>
+        <h3 style="margin:0 0 8px;font-size:1.25rem;color:#f8fafc;font-weight:700;">Emergency Monitoring Active</h3>
+        <p style="margin:0 0 16px;color:#94a3b8;font-size:0.95rem;line-height:1.5;">
+          Are you sure you want to leave the emergency monitoring system?
+        </p>
+        <p style="margin:0 0 20px;color:#64748b;font-size:0.85rem;">
+          Your login session remains securely saved. You will not be logged out.
+        </p>
+        <div style="display:flex;gap:12px;justify-content:center;">
+          <button id="btn-stay-on-site" class="primary" style="flex:1;background:#2563eb;color:#fff;border:none;padding:12px 18px;border-radius:10px;font-weight:600;font-size:0.95rem;cursor:pointer;">Stay on website</button>
+          <button id="btn-exit-site" class="secondary" style="flex:1;background:#334155;color:#e2e8f0;border:1px solid #475569;padding:12px 18px;border-radius:10px;font-weight:600;font-size:0.95rem;cursor:pointer;">Exit website</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 let activeIncidentDetailsUnsub = null;
 let subscribedDetailsIncidentId = null;
 
@@ -1784,7 +1880,7 @@ function render() {
     }
   }
 
-  app.innerHTML = shell(content);
+  app.innerHTML = shell(content) + (state.showExitPrompt ? renderExitPromptModal() : '');
   if (state.view === 'analytics' && !state.selected) loadStats();
 }
 
@@ -1919,6 +2015,7 @@ async function handleLogin(formEl) {
     state.view = 'home';
     safeStorage.set('sos-user', JSON.stringify(authRes.user));
     safeStorage.set('sos-token', authRes.token);
+    pushNavState('dashboard', null);
 
     console.log(`%c[SOS:Auth] Successfully signed in! Role: ${authRes.user.role}, Name: ${authRes.user.name}`, 'color:#10b981;font-weight:bold');
 
@@ -1933,18 +2030,19 @@ async function handleLogin(formEl) {
     render();
   } catch (err) {
     console.error('[SOS:Auth] Authentication error:', err.message);
+    const isNetwork = err.code === 'unavailable' || err.name === 'TypeError' || err.message?.includes('Failed to fetch') || (typeof navigator !== 'undefined' && !navigator.onLine);
     let msg = err.message || 'Authentication failed';
     if (err.code === 'permission-denied') {
       msg = 'Access denied by Firestore security rules.';
-    } else if (err.code === 'unavailable' || err.name === 'TypeError') {
-      msg = 'Firebase service is currently unreachable. Please check your internet connection.';
+    } else if (isNetwork) {
+      msg = 'Network connection offline. Firebase service will retry when online.';
     }
 
     showLoginError(msg);
 
     // Keep registration ID and PIN intact during temporary network errors.
-    // If credentials are incorrect, clear only the incorrect fields.
-    if (isResp) {
+    // If credentials are incorrect, clear only the incorrect fields when NOT a network error.
+    if (isResp && !isNetwork) {
       if (err.field === 'registration_number' || msg.toLowerCase().includes('registration') || msg.toLowerCase().includes('regd')) {
         if (regdInput) {
           regdInput.value = '';
@@ -1956,7 +2054,7 @@ async function handleLogin(formEl) {
           pinInput.focus();
         }
       }
-    } else {
+    } else if (!isResp && !isNetwork) {
       if (err.field === 'name' || msg.toLowerCase().includes('name')) {
         if (nameInput) {
           nameInput.value = '';
@@ -2518,7 +2616,7 @@ async function handleInstantOneClickSos(btnEl) {
   const originalContent = btnEl ? btnEl.innerHTML : '🚨 Send SOS Now';
   if (btnEl) {
     btnEl.disabled = true;
-    btnEl.innerHTML = '<span class="btnSpinner"></span> Getting your current GPS location...';
+    btnEl.innerHTML = '<span class="btnSpinner"></span> Getting your location and sending SOS...';
   }
 
   try {
@@ -2539,12 +2637,26 @@ async function handleInstantOneClickSos(btnEl) {
       Number.isFinite(Number(gpsResult.latitude)) &&
       Number.isFinite(Number(gpsResult.longitude));
 
+    if (!hasGps) {
+      console.warn('[SOS:Instant] GPS unavailable. Aborting automatic SOS submission:', gpsResult);
+      if (gpsResult?.locationStatus === 'permission_denied') {
+        state.error = 'Location permission was denied. Please allow location access or select an emergency category below to specify your building and room.';
+      } else {
+        state.error = 'Unable to determine GPS location. Please select an emergency category below to specify your location.';
+      }
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.innerHTML = originalContent;
+      }
+      render();
+      return;
+    }
+
     if (btnEl) {
       btnEl.innerHTML = '<span class="btnSpinner"></span> Dispatching emergency alert...';
     }
 
     // 2. Assemble automatic SOS data.
-    // CRITICAL: Do NOT abort if GPS is slow/timing out! Submit the SOS immediately!
     const idempotencyKey = crypto.randomUUID();
     const payload = {
       categoryId: 'general',
@@ -2623,8 +2735,9 @@ async function handleInstantOneClickSos(btnEl) {
 
     // 6. Update UI and notifications
     if (btnEl) {
-      btnEl.innerHTML = '✓ SOS sent successfully.';
+      btnEl.innerHTML = '✓ SOS sent successfully. Emergency responders have been alerted.';
     }
+    state.notice = { type: 'success', text: 'SOS sent successfully. Emergency responders have been alerted.' };
 
     // Instant broadcast across open tabs
     if (sosBroadcast) {
@@ -2881,6 +2994,7 @@ document.addEventListener('click', async (e) => {
       state.view = el.dataset.view;
     }
     state.selected = null;
+    pushNavState(state.view, null);
     render();
   }
 
@@ -2894,6 +3008,7 @@ document.addEventListener('click', async (e) => {
     } catch {
       state.selected = state.incidents.find(x => x.id === el.dataset.incident);
     }
+    pushNavState('details', el.dataset.incident);
     render();
   }
 
@@ -3030,6 +3145,7 @@ document.addEventListener('click', async (e) => {
       subscribedDetailsIncidentId = null;
     }
     state.selected = null;
+    pushNavState('dashboard', null);
     render();
   }
   if (a === 'close-details') {
@@ -3039,9 +3155,24 @@ document.addEventListener('click', async (e) => {
       subscribedDetailsIncidentId = null;
     }
     state.selected = null;
+    pushNavState('dashboard', null);
     render();
   }
   if (a === 'refresh') refresh();
+
+  // Exit Confirmation Modal button handlers (Android Back Button Protection)
+  if (el.id === 'btn-stay-on-site' || el.closest('#btn-stay-on-site')) {
+    state.showExitPrompt = false;
+    pushNavState(state.view || 'home', state.selected ? state.selected.id : null);
+    render();
+    return;
+  }
+  if (el.id === 'btn-exit-site' || el.closest('#btn-exit-site')) {
+    state.showExitPrompt = false;
+    allowNextExit = true;
+    window.history.back();
+    return;
+  }
 
   // Instant One-Click SOS triggered from Student Dashboard hero banner
   if (a === 'instant-one-click-sos') {
@@ -3201,7 +3332,14 @@ async function initAppSession() {
     // 1. Configure Firebase persistent authentication state (browserLocalPersistence where supported)
     await initFirebasePersistence().catch(() => {});
 
-    // 2. Read saved session from persistent storage
+    // 2. Attach Firebase Auth state listener
+    onFirebaseAuthStateChanged(async (fbUser) => {
+      if (fbUser && !state.user) {
+        console.log('[SOS:Auth] onAuthStateChanged restored Firebase Auth user:', fbUser.uid);
+      }
+    });
+
+    // 3. Read saved session from persistent storage
     let saved = null;
     try {
       const raw = safeStorage.get('sos-user');
@@ -3215,13 +3353,17 @@ async function initAppSession() {
       }
     } catch {}
 
-    // 3. Verify saved session against trusted Cloud Firestore backend
+    // 4. Verify saved session against trusted Cloud Firestore backend
     if (saved) {
       const verified = await verifyAndRestoreSession(saved);
       if (verified && verified.user) {
         state.user = verified.user;
         state.token = verified.token || safeStorage.get('sos-token') || '';
         state.authRestoring = false;
+        if (verified.offline) {
+          state.isOfflineSession = true;
+          state.notice = { type: 'warning', text: 'Working in offline mode with verified session. Live sync will resume when internet connectivity returns.' };
+        }
 
         console.log(`%c[SOS:Auth] Persistent session verified & restored: ${state.user.name} (${state.user.id}) [${state.user.role}]`, 'color:#10b981;font-weight:bold');
 
@@ -3238,7 +3380,7 @@ async function initAppSession() {
           console.warn('[SOS:Auth] Initial refresh notice:', err.message);
         }
 
-        // 4. Resume live location tracking if student has an active unresolved SOS
+        // Resume live location tracking if student has an active unresolved SOS
         if (!isResponderUser(state.user) && state.user.role === 'STUDENT') {
           const activeInc = state.incidents.find(i => i.student_id === state.user.id && !['RESOLVED', 'CANCELLED', 'REJECTED', 'DUPLICATE'].includes(i.status));
           if (activeInc) {
@@ -3247,15 +3389,24 @@ async function initAppSession() {
           }
         }
 
+        pushNavState('dashboard', null);
         render();
         return;
       } else {
-        console.warn('[SOS:Auth] Saved session could not be verified against Firebase records. Clearing local state.');
-        safeStorage.clearSession();
+        console.warn('[SOS:Auth] Saved session could not be verified against Firebase records.');
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          safeStorage.clearSession();
+        }
       }
     }
   } catch (err) {
     console.error('[SOS:Auth] Session initialization error:', err);
+    if (saved) {
+      state.user = saved;
+      state.authRestoring = false;
+      render();
+      return;
+    }
   }
 
   // If no saved session or verification failed, cleanly render the login page

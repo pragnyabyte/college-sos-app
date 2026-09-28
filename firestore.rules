@@ -66,19 +66,23 @@ service cloud.firestore {
 
       // Allow audit delivery receipts and logs subcollections
       match /delivery_receipts/{receiptId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow create, update: if request.resource.data.keys().hasAll(['incidentId', 'deviceId']);
       }
       match /delivery_logs/{logId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow write: if request.resource.data.keys().hasAll(['timestamp']);
       }
       match /audit_logs/{logId} {
-        allow read, write: if true;
+        allow read: if true;
+        allow write: if request.resource.data.keys().hasAll(['timestamp']);
       }
     }
 
     // Root notification audit logs
     match /notification_audit_logs/{auditId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if request.resource.data.keys().hasAll(['incidentId', 'timestamp']);
     }
   }
 }
