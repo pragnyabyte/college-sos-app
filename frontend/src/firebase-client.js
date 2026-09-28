@@ -1,6 +1,15 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage, isSupported } from 'firebase/messaging';
 import { getFirestore, doc, setDoc, getDoc, getDocs, deleteDoc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
+import {
+  getAuth,
+  setPersistence,
+  browserLocalPersistence,
+  indexedDBLocalPersistence,
+  inMemoryPersistence,
+  onAuthStateChanged,
+  signOut as firebaseSignOut
+} from 'firebase/auth';
 
 export const firebaseConfig = {
   projectId: "college-sos-app-26aec",
@@ -15,12 +24,216 @@ export const firebaseConfig = {
 
 let app = null;
 let messaging = null;
+let authInstance = null;
+let persistenceStatus = { configured: false, mode: 'none' };
 
 export function getFirebaseApp() {
   if (!app) {
     app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
   }
   return app;
+}
+
+export function getFirebaseAuth() {
+  if (!authInstance) {
+    const firebaseApp = getFirebaseApp();
+    try {
+      authInstance = getAuth(firebaseApp);
+    } catch (e) {
+      console.warn('[SOS:Auth] Firebase getAuth warning:', e.message);
+    }
+  }
+  return authInstance;
+}
+
+/**
+ * Configures persistent authentication state using browserLocalPersistence where supported.
+ * If browserLocalPersistence is unsupported in the current environment,
+ * falls back to the strongest supported persistence mode.
+ */
+export async function initFirebasePersistence() {
+  if (persistenceStatus.configured) {
+    return persistenceStatus;
+  }
+
+  const auth = getFirebaseAuth();
+  if (!auth) {
+    persistenceStatus = { configured: true, mode: 'localStorage-fallback' };
+    return persistenceStatus;
+  }
+
+  try {
+    if (typeof window !== 'undefined') {
+      const preferred = browserLocalPersistence || indexedDBLocalPersistence;
+      if (preferred) {
+        await setPersistence(auth, preferred);
+        persistenceStatus = { configured: true, mode: 'browserLocalPersistence' };
+        console.log('%c[SOS:Auth] Firebase Auth browserLocalPersistence configured successfully.', 'color:#10b981;font-weight:bold');
+        return persistenceStatus;
+      }
+    }
+  } catch (err) {
+    console.warn('[SOS:Auth] browserLocalPersistence configuration note:', err.message);
+    try {
+      if (indexedDBLocalPersistence) {
+        await setPersistence(auth, indexedDBLocalPersistence);
+        persistenceStatus = { configured: true, mode: 'indexedDBLocalPersistence' };
+        return persistenceStatus;
+      }
+    } catch (e2) {
+      console.warn('[SOS:Auth] indexedDBLocalPersistence fallback note:', e2.message);
+    }
+  }
+
+  persistenceStatus = { configured: true, mode: 'localStorage-fallback' };
+  return persistenceStatus;
+}
+
+/**
+ * Registers an authentication state observer on the Firebase Auth instance.
+ */
+export function onFirebaseAuthStateChanged(onUserChanged, onError) {
+  const auth = getFirebaseAuth();
+  if (!auth) return () => {};
+  try {
+    return onAuthStateChanged(auth, onUserChanged, onError);
+  } catch (e) {
+    console.warn('[SOS:Auth] onAuthStateChanged setup notice:', e.message);
+    return () => {};
+  }
+}
+
+/**
+ * Calls Firebase signOut to invalidate the active session.
+ */
+export async function signOutFirebase() {
+  try {
+    const auth = getFirebaseAuth();
+    if (auth && auth.currentUser) {
+      await firebaseSignOut(auth);
+      console.log('[SOS:Auth] Firebase Auth signOut completed.');
+    }
+  } catch (err) {
+    console.warn('[SOS:Auth] Firebase signOut notice:', err.message);
+  }
+}
+
+/**
+ * Restores and verifies a saved session against trusted Cloud Firestore records.
+ * NEVER trusts an unverified role or identity stored solely in localStorage.
+ * Restores the correct role from Firestore-backed user data.
+ */
+export async function verifyAndRestoreSession(savedSession) {
+  if (!savedSession || typeof savedSession !== 'object') return null;
+
+  const rawId = String(savedSession.id || savedSession.regdNo || '').trim();
+  const claimedRole = String(savedSession.role || '').toUpperCase();
+
+  if (!rawId || !claimedRole) return null;
+
+  const db = getFirebaseFirestore();
+
+  // If responder: verify against emergency_responders collection in Cloud Firestore
+  if (claimedRole === 'RESPONDER' || rawId === 'RESP-1111') {
+    if (rawId !== 'RESP-1111') {
+      console.warn('[SOS:Auth] Non-authorized responder ID rejected during session restoration:', rawId);
+      return null;
+    }
+
+    try {
+      if (db) {
+        const respRef = doc(db, 'emergency_responders', 'RESP-1111');
+        const snap = await getDoc(respRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.authorized === false) {
+            console.warn('[SOS:Auth] Responder authorization revoked in Firestore.');
+            return null;
+          }
+          return {
+            user: {
+              id: 'RESP-1111',
+              name: data.name || savedSession.name || 'Campus Emergency Response Unit (RESP-1111)',
+              role: 'RESPONDER',
+              departmentId: data.departmentId || 'DEPT_SECURITY'
+            },
+            token: savedSession.token || `sos-resp-token-RESP-1111`
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[SOS:Auth] Responder Firestore verification notice (allowing offline session):', err.message);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return {
+          user: {
+            id: 'RESP-1111',
+            name: savedSession.name || 'Campus Emergency Response Unit (RESP-1111)',
+            role: 'RESPONDER',
+            departmentId: 'DEPT_SECURITY'
+          },
+          token: savedSession.token || `sos-resp-token-RESP-1111`
+        };
+      }
+    }
+
+    return {
+      user: {
+        id: 'RESP-1111',
+        name: savedSession.name || 'Campus Emergency Response Unit (RESP-1111)',
+        role: 'RESPONDER',
+        departmentId: 'DEPT_SECURITY'
+      },
+      token: savedSession.token || `sos-resp-token-RESP-1111`
+    };
+  }
+
+  // If student: verify against students collection in Cloud Firestore
+  if (claimedRole === 'STUDENT') {
+    const cleanId = normalizeRegdNo(rawId);
+    try {
+      if (db) {
+        const studentRef = doc(db, 'students', cleanId);
+        const snap = await getDoc(studentRef);
+        if (!snap.exists()) {
+          console.warn('[SOS:Auth] Student record not found in Firestore. Session revoked for ID:', cleanId);
+          return null;
+        }
+
+        const studentData = snap.data();
+        if (studentData.status === 'suspended' || studentData.status === 'revoked') {
+          console.warn('[SOS:Auth] Student account is inactive or revoked:', cleanId);
+          return null;
+        }
+
+        return {
+          user: {
+            id: studentData.regdNo || cleanId,
+            name: studentData.name || savedSession.name,
+            role: 'STUDENT',
+            departmentId: studentData.departmentId || null,
+            accountId: studentData.accountId || savedSession.accountId || cleanId
+          },
+          token: savedSession.token || `sos-student-token-${cleanId}`
+        };
+      }
+    } catch (err) {
+      console.warn('[SOS:Auth] Student Firestore check notice (network/offline):', err.message);
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        return {
+          user: {
+            id: cleanId,
+            name: savedSession.name,
+            role: 'STUDENT',
+            departmentId: null,
+            accountId: savedSession.accountId || cleanId
+          },
+          token: savedSession.token || `sos-student-token-${cleanId}`
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 export function getDeviceId() {

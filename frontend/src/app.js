@@ -12,7 +12,11 @@ import {
   updateIncidentLocationInFirestore,
   deleteIncidentFromFirestore,
   syncIncidentToFirestore,
-  listenToFirestoreIncidents
+  listenToFirestoreIncidents,
+  initFirebasePersistence,
+  verifyAndRestoreSession,
+  signOutFirebase,
+  onFirebaseAuthStateChanged
 } from './firebase-client.js';
 import {
   initAudio,
@@ -88,16 +92,25 @@ const defaultCategories = [
 
 const defaultIncidents = [];
 
-// Safe storage wrapper: strictly isolates student and responder sessions per browser tab
+// Safe storage wrapper: persists student and responder sessions across browser closures and reloads
 const safeStorage = {
   get: (k) => {
     try {
+      const v = localStorage.getItem(k);
+      if (v !== null) return v;
       return sessionStorage.getItem(k);
     } catch { return null; }
   },
   set: (k, v) => {
     try {
+      localStorage.setItem(k, v);
       sessionStorage.setItem(k, v);
+    } catch {}
+  },
+  remove: (k) => {
+    try {
+      localStorage.removeItem(k);
+      sessionStorage.removeItem(k);
     } catch {}
   },
   clearSession: () => {
@@ -125,6 +138,7 @@ try {
 } catch {}
 
 const state = {
+  authRestoring: true,
   user: initialUser,
   token: safeStorage.get('sos-token') || '',
   deviceId: getDeviceId(),
@@ -1633,17 +1647,47 @@ function analytics() {
   return `<section class="pageTitle row"><div><p class="eyebrow">OPERATIONS OVERVIEW</p><h1>Emergency analytics</h1><p>Live, database-backed response metrics.</p></div><button class="secondary" data-action="export">Export CSV</button></section><div class="stats" id="stats"><article><small>Loading metrics…</small></article></div><section class="panel analyticsNote"><h2>Operational safeguards</h2><p>Metrics use server timestamps and persisted incident records. Exact GPS data and restricted reports remain permission-controlled.</p></section>`;
 }
 
+function renderAuthLoadingScreen(statusMsg = 'Restoring secure session…') {
+  return `
+    <div class="authLoadingScreen" id="auth-loading-screen">
+      <div class="authLoadingCard">
+        <div class="authLoadingIcon">
+          <span class="authPulseDot"></span>
+          <span class="authShieldIcon">🛡️</span>
+        </div>
+        <h2>College ERP · Emergency SOS</h2>
+        <p class="authLoadingStatus">${esc(statusMsg)}</p>
+        <div class="authProgressBar">
+          <div class="authProgressIndeterminate"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function render() {
+  // If session verification is in progress, show loading screen (prevents authentication flickering)
+  if (state.authRestoring) {
+    app.innerHTML = renderAuthLoadingScreen('Restoring secure session…');
+    return;
+  }
+
   // If not logged in, show the single unified sign-in form
   if (!state.user) {
     return login();
+  }
+
+  // Double check role guard: Never allow a student account to access responder-only pages
+  const isResp = isResponderUser(state.user);
+  if (!isResp && (state.view === 'analytics' || state.view === 'board')) {
+    state.view = 'home';
   }
 
   // After login, automatically determine dashboard view based on authenticated role
   let content;
   if (state.selected) {
     content = details(state.selected);
-  } else if (!isResponderUser(state.user) && state.user.role === 'STUDENT') {
+  } else if (!isResp && state.user.role === 'STUDENT') {
     const a = state.incidents.find(i => i.student_id === state.user.id && !['RESOLVED', 'CANCELLED', 'REJECTED', 'DUPLICATE'].includes(i.status));
     content = state.view === 'history' ? history() : a ? active(a) : create();
   } else {
@@ -1678,6 +1722,12 @@ async function handleLogin(formEl) {
   const regdNo = String(regdInput?.value || '').trim();
   const role = String(roleSelect?.value || currentAuthRole || 'STUDENT').trim();
   const pin = String(pinInput?.value || '').trim();
+
+  if (role !== 'STUDENT' && role !== 'RESPONDER') {
+    showLoginError('Invalid role. Only Student and Emergency Responder roles are supported.');
+    return;
+  }
+
   const isResp = role === 'RESPONDER';
 
   if (!isResp) {
@@ -2519,7 +2569,11 @@ document.addEventListener('click', async (e) => {
   }
 
   if (el.dataset.view) {
-    state.view = el.dataset.view;
+    if (!isResponderUser(state.user) && ['analytics', 'board'].includes(el.dataset.view)) {
+      state.view = 'home';
+    } else {
+      state.view = el.dataset.view;
+    }
     state.selected = null;
     render();
   }
@@ -2622,7 +2676,10 @@ document.addEventListener('click', async (e) => {
   }
 
   if (a === 'logout') {
-    console.log('[SOS:Auth] Signing out of website session.');
+    const confirmLogout = window.confirm('Are you sure you want to log out of the Emergency SOS system?');
+    if (!confirmLogout) return;
+
+    console.log('[SOS:Auth] Explicitly signing out of website session.');
     if (isResponderUser(state.user)) {
       api(`/api/responder/device/${encodeURIComponent(getDeviceId())}`, { method: 'DELETE' }).catch(() => {});
     }
@@ -2633,6 +2690,7 @@ document.addEventListener('click', async (e) => {
       firestoreUnsub = null;
     }
     stopEmergencyAlarm();
+    try { await signOutFirebase(); } catch {}
     safeStorage.clearSession();
     Object.assign(state, { user: null, token: '', incidents: [], selected: null, notice: null, socket: null, activeAlarm: null });
     render();
@@ -2812,15 +2870,68 @@ app.addEventListener('input', (e) => {
 // Initialize categories and app state with Firebase
 state.categories = defaultCategories;
 
-if (state.user) {
-  refresh().catch(() => {});
-} else {
+// Initialize app session with Firebase persistent authentication
+async function initAppSession() {
+  state.authRestoring = true;
+  render(); // Renders the loading screen immediately to prevent flickering
+
+  try {
+    // 1. Configure Firebase persistent authentication state (browserLocalPersistence where supported)
+    await initFirebasePersistence().catch(() => {});
+
+    // 2. Read saved session from persistent storage
+    let saved = null;
+    try {
+      const raw = safeStorage.get('sos-user');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001' || parsed.id === '250131' || parsed.regdNo === '250131')) {
+          safeStorage.clearSession();
+        } else {
+          saved = parsed;
+        }
+      }
+    } catch {}
+
+    // 3. Verify saved session against trusted Cloud Firestore backend
+    if (saved) {
+      const verified = await verifyAndRestoreSession(saved);
+      if (verified && verified.user) {
+        state.user = verified.user;
+        state.token = verified.token || safeStorage.get('sos-token') || '';
+        state.authRestoring = false;
+
+        console.log(`%c[SOS:Auth] Persistent session verified & restored: ${state.user.name} (${state.user.id}) [${state.user.role}]`, 'color:#10b981;font-weight:bold');
+
+        if (isResponderUser(state.user)) {
+          initAudio();
+          initResponderPush();
+          attachFirestoreListener();
+          checkIncidentQueryParam();
+        }
+
+        try {
+          await refresh();
+        } catch (err) {
+          console.warn('[SOS:Auth] Initial refresh notice:', err.message);
+        }
+        render();
+        return;
+      } else {
+        console.warn('[SOS:Auth] Saved session could not be verified against Firebase records. Clearing local state.');
+        safeStorage.clearSession();
+      }
+    }
+  } catch (err) {
+    console.error('[SOS:Auth] Session initialization error:', err);
+  }
+
+  // If no saved session or verification failed, cleanly render the login page
+  state.user = null;
+  state.token = '';
+  state.authRestoring = false;
   render();
 }
 
-if (isResponderUser(state.user)) {
-  initAudio();
-  initResponderPush();
-  attachFirestoreListener();
-  checkIncidentQueryParam();
-}
+// Start persistent session initialization
+initAppSession();
