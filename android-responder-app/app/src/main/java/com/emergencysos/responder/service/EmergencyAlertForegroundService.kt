@@ -98,12 +98,16 @@ class EmergencyAlertForegroundService : Service() {
 
                             triggerIncidentAlert(
                                 incidentId = newlyAdded.id,
-                                category = newlyAdded.categoryId,
+                                category = newlyAdded.categoryId ?: "Emergency",
                                 priority = newlyAdded.priority,
-                                studentName = newlyAdded.studentName,
-                                studentId = newlyAdded.studentId,
+                                studentName = newlyAdded.studentName ?: "Student",
+                                studentId = newlyAdded.studentId ?: "",
                                 location = locStr,
-                                description = newlyAdded.description
+                                description = newlyAdded.description ?: "",
+                                studentPhone = newlyAdded.studentPhone ?: "",
+                                latitude = newlyAdded.location?.latitude,
+                                longitude = newlyAdded.location?.longitude,
+                                accuracy = newlyAdded.location?.accuracy
                             )
                         }
                     },
@@ -158,8 +162,24 @@ class EmergencyAlertForegroundService : Service() {
         val studentId = intent?.getStringExtra(EXTRA_STUDENT_ID) ?: ""
         val location = intent?.getStringExtra(EXTRA_LOCATION) ?: "Campus"
         val description = intent?.getStringExtra(EXTRA_DESCRIPTION) ?: ""
+        val studentPhone = intent?.getStringExtra(EXTRA_STUDENT_PHONE) ?: ""
+        val latitude = intent?.getDoubleExtra(EXTRA_LATITUDE, Double.NaN).let { if (it?.isNaN() == true) null else it }
+        val longitude = intent?.getDoubleExtra(EXTRA_LONGITUDE, Double.NaN).let { if (it?.isNaN() == true) null else it }
+        val accuracy = intent?.getDoubleExtra(EXTRA_ACCURACY, Double.NaN).let { if (it?.isNaN() == true) null else it }
 
-        triggerIncidentAlert(incidentId, category, priority, studentName, studentId, location, description)
+        triggerIncidentAlert(
+            incidentId = incidentId,
+            category = category,
+            priority = priority,
+            studentName = studentName,
+            studentId = studentId,
+            location = location,
+            description = description,
+            studentPhone = studentPhone,
+            latitude = latitude,
+            longitude = longitude,
+            accuracy = accuracy
+        )
     }
 
     private fun triggerIncidentAlert(
@@ -169,17 +189,21 @@ class EmergencyAlertForegroundService : Service() {
         studentName: String,
         studentId: String,
         location: String,
-        description: String
+        description: String,
+        studentPhone: String = "",
+        latitude: Double? = null,
+        longitude: Double? = null,
+        accuracy: Double? = null
     ) {
         currentIncidentId = incidentId
         isAlarmActive = true
 
         Log.d(TAG, "Triggering emergency alarm for $incidentId ($priority) at $location")
 
-        // 1. Acquire safe wake lock
+        // 1. Acquire safe wake lock to illuminate screen even when phone is sleeping/locked
         acquireWakeLock()
 
-        // 2. Start distinctive emergency siren and vibration
+        // 2. Start distinctive emergency siren and vibration on USAGE_ALARM stream
         AlarmSoundPlayer.startAlarm(applicationContext)
 
         // Schedule safety auto-silence
@@ -203,8 +227,12 @@ class EmergencyAlertForegroundService : Service() {
             putExtra("priority", priority)
             putExtra("student_name", studentName)
             putExtra("student_id", studentId)
+            putExtra("student_phone", studentPhone)
             putExtra("location", location)
             putExtra("description", description)
+            if (latitude != null) putExtra("latitude", latitude)
+            if (longitude != null) putExtra("longitude", longitude)
+            if (accuracy != null) putExtra("accuracy", accuracy)
         }
 
         val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -220,18 +248,7 @@ class EmergencyAlertForegroundService : Service() {
             piFlags
         )
 
-        // Notification Action: Stop Alarm / Silence
-        val stopAlarmIntent = Intent(this, EmergencyAlertForegroundService::class.java).apply {
-            this.action = ACTION_STOP_ALARM
-        }
-        val stopAlarmPendingIntent = PendingIntent.getService(
-            this,
-            101,
-            stopAlarmIntent,
-            piFlags
-        )
-
-        // Notification Action: Acknowledge SOS
+        // Notification Action 1: Acknowledge SOS
         val ackIntent = Intent(this, EmergencyAlertForegroundService::class.java).apply {
             this.action = ACTION_ACKNOWLEDGE
         }
@@ -242,14 +259,33 @@ class EmergencyAlertForegroundService : Service() {
             piFlags
         )
 
+        // Notification Action 2: View Location (Map Intent)
+        val mapUri = if (latitude != null && longitude != null) {
+            android.net.Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude(Emergency+Student+Location)")
+        } else {
+            android.net.Uri.parse("geo:0,0?q=" + android.net.Uri.encode(location))
+        }
+        val mapIntent = Intent(Intent.ACTION_VIEW, mapUri).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val mapPendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            incidentId.hashCode() + 10,
+            mapIntent,
+            piFlags
+        )
+
         val title = "🚨 EMERGENCY SOS: $incidentId ($priority)"
-        val body = "$studentName reported $category at $location"
+        val locDetails = if (latitude != null && longitude != null) {
+            "$location [GPS: %.4f, %.4f]".format(latitude, longitude)
+        } else location
+        val body = "$studentName reported $category at $locDetails"
 
         val notificationBuilder = NotificationCompat.Builder(this, EmergencySosApp.CHANNEL_EMERGENCY_ID)
             .setSmallIcon(R.drawable.ic_stat_sos)
             .setContentTitle(title)
             .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("$body\nDetails: $description"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$body\nDetails: $description\nPhone: ${studentPhone.ifEmpty { "Not provided" }}"))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -258,8 +294,35 @@ class EmergencyAlertForegroundService : Service() {
             .setColor(0xDC2626)
             .setContentIntent(fullScreenPendingIntent)
             .setFullScreenIntent(fullScreenPendingIntent, true)
-            .addAction(R.drawable.ic_stat_sos, "STOP ALARM", stopAlarmPendingIntent)
             .addAction(R.drawable.ic_stat_sos, "ACKNOWLEDGE", ackPendingIntent)
+            .addAction(R.drawable.ic_stat_sos, "VIEW LOCATION", mapPendingIntent)
+
+        // Notification Action 3: Call Student (if phone number is present)
+        if (studentPhone.isNotBlank()) {
+            val callIntent = Intent(Intent.ACTION_DIAL).apply {
+                data = android.net.Uri.parse("tel:${studentPhone.trim()}")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            val callPendingIntent = PendingIntent.getActivity(
+                applicationContext,
+                incidentId.hashCode() + 20,
+                callIntent,
+                piFlags
+            )
+            notificationBuilder.addAction(R.drawable.ic_stat_sos, "CALL STUDENT", callPendingIntent)
+        }
+
+        // Notification Action 4: Stop Alarm / Silence
+        val stopAlarmIntent = Intent(this, EmergencyAlertForegroundService::class.java).apply {
+            this.action = ACTION_STOP_ALARM
+        }
+        val stopAlarmPendingIntent = PendingIntent.getService(
+            this,
+            101,
+            stopAlarmIntent,
+            piFlags
+        )
+        notificationBuilder.addAction(R.drawable.ic_stat_sos, "STOP ALARM", stopAlarmPendingIntent)
 
         val notification = notificationBuilder.build()
 
@@ -356,8 +419,9 @@ class EmergencyAlertForegroundService : Service() {
         try {
             if (wakeLock == null) {
                 val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                @Suppress("DEPRECATION")
                 wakeLock = pm?.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
                     "EmergencySos:AlertWakeLock"
                 )
             }
@@ -404,8 +468,12 @@ class EmergencyAlertForegroundService : Service() {
         const val EXTRA_PRIORITY = "priority"
         const val EXTRA_STUDENT_NAME = "student_name"
         const val EXTRA_STUDENT_ID = "student_id"
+        const val EXTRA_STUDENT_PHONE = "student_phone"
         const val EXTRA_LOCATION = "location"
         const val EXTRA_DESCRIPTION = "description"
+        const val EXTRA_LATITUDE = "latitude"
+        const val EXTRA_LONGITUDE = "longitude"
+        const val EXTRA_ACCURACY = "accuracy"
 
         private const val MAX_ALARM_DURATION_MS = 180_000L // 3 minutes
 
@@ -438,7 +506,11 @@ class EmergencyAlertForegroundService : Service() {
             studentName: String,
             studentId: String,
             location: String,
-            description: String
+            description: String,
+            studentPhone: String = "",
+            latitude: Double? = null,
+            longitude: Double? = null,
+            accuracy: Double? = null
         ) {
             alertedIncidentIds.add(incidentId)
             val intent = Intent(context, EmergencyAlertForegroundService::class.java).apply {
@@ -448,8 +520,12 @@ class EmergencyAlertForegroundService : Service() {
                 putExtra(EXTRA_PRIORITY, priority)
                 putExtra(EXTRA_STUDENT_NAME, studentName)
                 putExtra(EXTRA_STUDENT_ID, studentId)
+                putExtra(EXTRA_STUDENT_PHONE, studentPhone)
                 putExtra(EXTRA_LOCATION, location)
                 putExtra(EXTRA_DESCRIPTION, description)
+                if (latitude != null) putExtra(EXTRA_LATITUDE, latitude)
+                if (longitude != null) putExtra(EXTRA_LONGITUDE, longitude)
+                if (accuracy != null) putExtra(EXTRA_ACCURACY, accuracy)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

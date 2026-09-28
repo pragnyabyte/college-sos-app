@@ -64,6 +64,10 @@ class SosFirebaseMessagingService : FirebaseMessagingService() {
         val floor = data["floor"] ?: ""
         val room = data["room"] ?: ""
         val description = data["description"] ?: ""
+        val studentPhone = data["studentPhone"] ?: data["student_phone"] ?: data["phone"] ?: ""
+        val latitude = data["latitude"]?.toDoubleOrNull()
+        val longitude = data["longitude"]?.toDoubleOrNull()
+        val accuracy = data["accuracy"]?.toDoubleOrNull()
 
         val prefs = PreferencesManager.getInstance(applicationContext)
 
@@ -79,7 +83,9 @@ class SosFirebaseMessagingService : FirebaseMessagingService() {
         }
 
         // 2. Launch compliant EmergencyAlertForegroundService to sound siren, vibrate, and display lockscreen alert
-        val locStr = listOf(building, floor, room).filter { it.isNotBlank() }.joinToString(" · ").ifEmpty { "Campus" }
+        val locStr = listOf(building, floor, room).filter { it.isNotBlank() }.joinToString(" · ").ifEmpty {
+            if (latitude != null && longitude != null) "GPS: %.4f, %.4f".format(latitude, longitude) else "Campus"
+        }
         try {
             com.emergencysos.responder.service.EmergencyAlertForegroundService.startEmergencyAlert(
                 context = applicationContext,
@@ -89,7 +95,11 @@ class SosFirebaseMessagingService : FirebaseMessagingService() {
                 studentName = studentName,
                 studentId = studentId,
                 location = locStr,
-                description = description
+                description = description,
+                studentPhone = studentPhone,
+                latitude = latitude,
+                longitude = longitude,
+                accuracy = accuracy
             )
             Log.d(TAG, "EmergencyAlertForegroundService started for incident $sosId")
         } catch (e: Exception) {

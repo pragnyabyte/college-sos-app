@@ -7,12 +7,11 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import android.widget.Toast
+import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.emergencysos.responder.audio.AlarmSoundPlayer
-import com.emergencysos.responder.data.AuditReceiptRequest
 import com.emergencysos.responder.data.PreferencesManager
-import com.emergencysos.responder.data.api.ApiClient
 import com.emergencysos.responder.databinding.ActivityIncidentAlertBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -39,15 +38,28 @@ class IncidentAlertActivity : AppCompatActivity() {
         val priority = intent.getStringExtra("priority") ?: "CRITICAL"
         val studentName = intent.getStringExtra("student_name") ?: "Student"
         val studentId = intent.getStringExtra("student_id") ?: ""
+        val studentPhone = intent.getStringExtra("student_phone") ?: intent.getStringExtra("phone") ?: ""
         val location = intent.getStringExtra("location") ?: "Campus Location"
         val description = intent.getStringExtra("description") ?: "Emergency response requested."
+        val latitude = intent.getDoubleExtra("latitude", Double.NaN).let { if (it.isNaN()) null else it }
+        val longitude = intent.getDoubleExtra("longitude", Double.NaN).let { if (it.isNaN()) null else it }
+        val accuracy = intent.getDoubleExtra("accuracy", Double.NaN).let { if (it.isNaN()) null else it }
 
         binding.tvAlertId.text = incidentId
         binding.tvCategory.text = category
         binding.tvPriority.text = "$priority PRIORITY"
         binding.tvLocation.text = location
         binding.tvStudent.text = if (studentId.isNotEmpty()) "$studentName ($studentId)" else studentName
+        binding.tvStudentPhone.text = if (studentPhone.isNotEmpty()) "📞 Phone: $studentPhone" else "Phone: Not provided"
         binding.tvDescription.text = description
+
+        // GPS Coordinates and accuracy presentation
+        if (latitude != null && longitude != null) {
+            val accStr = if (accuracy != null && accuracy > 0) " (±${accuracy.toInt()}m)" else ""
+            binding.tvGpsCoordinates.text = "📍 GPS: %.5f, %.5f%s".format(latitude, longitude, accStr)
+        } else {
+            binding.tvGpsCoordinates.text = "Campus Location (Manual selection)"
+        }
 
         // Ensure alarm is playing
         if (!AlarmSoundPlayer.isAlarmActive()) {
@@ -57,7 +69,7 @@ class IncidentAlertActivity : AppCompatActivity() {
         // Report that the alert was viewed / opened on the screen
         reportOpenReceipt()
 
-        setupActionButtons()
+        setupActionButtons(studentPhone, latitude, longitude, location)
     }
 
     private fun configureLockScreenDisplay() {
@@ -86,8 +98,13 @@ class IncidentAlertActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupActionButtons() {
-        // Acknowledge SOS
+    private fun setupActionButtons(
+        studentPhone: String,
+        latitude: Double?,
+        longitude: Double?,
+        locationText: String
+    ) {
+        // 1. ACKNOWLEDGE SOS
         binding.btnAcknowledgeAlert.setOnClickListener {
             com.emergencysos.responder.service.EmergencyAlertForegroundService.acknowledgeAlert(this)
             binding.btnAcknowledgeAlert.isEnabled = false
@@ -112,7 +129,48 @@ class IncidentAlertActivity : AppCompatActivity() {
             }
         }
 
-        // Silence Siren Only
+        // 2. CALL STUDENT
+        binding.btnCallStudent.setOnClickListener {
+            if (studentPhone.isNotBlank()) {
+                try {
+                    val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+                        data = Uri.parse("tel:${studentPhone.trim()}")
+                    }
+                    startActivity(dialIntent)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Unable to dial phone: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "No student phone number attached to this SOS alert.", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        // 3. VIEW LOCATION (Maps Intent)
+        binding.btnViewLocation.setOnClickListener {
+            try {
+                val mapUri = if (latitude != null && longitude != null) {
+                    Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude(Emergency+Student+Location)")
+                } else {
+                    Uri.parse("geo:0,0?q=" + Uri.encode(locationText))
+                }
+                val mapIntent = Intent(Intent.ACTION_VIEW, mapUri)
+                startActivity(mapIntent)
+            } catch (e: Exception) {
+                // Fallback to browser Google Maps URL
+                try {
+                    val webMapUri = if (latitude != null && longitude != null) {
+                        Uri.parse("https://maps.google.com/?q=$latitude,$longitude")
+                    } else {
+                        Uri.parse("https://maps.google.com/?q=" + Uri.encode(locationText))
+                    }
+                    startActivity(Intent(Intent.ACTION_VIEW, webMapUri))
+                } catch (err: Exception) {
+                    Toast.makeText(this, "Unable to open maps: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        // 4. Silence Siren Only
         binding.btnSilenceSiren.setOnClickListener {
             com.emergencysos.responder.service.EmergencyAlertForegroundService.stopAlarm(this)
             Toast.makeText(this, "Emergency siren silenced.", Toast.LENGTH_SHORT).show()
@@ -120,7 +178,7 @@ class IncidentAlertActivity : AppCompatActivity() {
             binding.btnSilenceSiren.text = "Silenced"
         }
 
-        // Open Dashboard
+        // 5. Open Dashboard
         binding.btnDismiss.setOnClickListener {
             com.emergencysos.responder.service.EmergencyAlertForegroundService.dismissAlert(this)
             openDashboard()

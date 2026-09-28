@@ -1,9 +1,8 @@
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getDb } from './db.js';
 
 let fcmInitialized = false;
 let fcmError = null;
@@ -67,48 +66,32 @@ export function initFirebaseAdmin() {
 }
 
 /**
- * Ensures the permanent responder document exists in MongoDB Atlas.
+ * Ensures the permanent responder document exists in Cloud Firestore.
  */
 export async function ensurePermanentResponder() {
   try {
-    const db = await getDb();
-    const responders = db.collection('emergency_responders');
+    initFirebaseAdmin();
+    const firestore = getFirestore();
     const pin = process.env.SOS_RESPONDER_PIN || DEFAULT_RESPONDER_PIN;
 
-    await responders.updateOne(
-      { responderId: RESPONDER_ID },
-      {
-        $set: {
-          responderId: RESPONDER_ID,
-          name: 'Campus Emergency Response Unit (RESP-1111)',
-          role: 'responder',
-          departmentId: 'DEPT_SECURITY',
-          active: true,
-          pin,
-          updatedAt: new Date().toISOString()
-        },
-        $setOnInsert: {
-          devices: {},
-          createdAt: new Date().toISOString()
-        }
-      },
-      { upsert: true }
-    );
+    await firestore.collection('emergency_responders').doc(RESPONDER_ID).set({
+      responderId: RESPONDER_ID,
+      name: 'Campus Emergency Response Unit (RESP-1111)',
+      role: 'responder',
+      departmentId: 'DEPT_SECURITY',
+      active: true,
+      pin,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
 
-    // Remove legacy responder docs so old credentials cannot be used
-    try {
-      await responders.deleteOne({ responderId: '250131' });
-      await responders.deleteOne({ responderId: 'RESP-001' });
-    } catch {}
-
-    console.log(`[FCM] Permanent responder ${RESPONDER_ID} verified/updated in database.`);
+    console.log(`[FCM] Permanent responder ${RESPONDER_ID} verified/updated in Cloud Firestore.`);
   } catch (e) {
     console.error('[FCM] Error ensuring permanent responder:', e.message);
   }
 }
 
 /**
- * Registers or updates a responder device FCM token under RESP-1111.
+ * Registers or updates a responder device FCM token under RESP-1111 in Cloud Firestore.
  * Supports multiple independent phones and web installations per responder.
  */
 export async function registerResponderDevice({
@@ -125,43 +108,37 @@ export async function registerResponderDevice({
     throw Object.assign(new Error('deviceId and fcmToken are required'), { status: 400 });
   }
 
-  const db = await getDb();
-  const responders = db.collection('emergency_responders');
+  initFirebaseAdmin();
+  const firestore = getFirestore();
   const now = new Date().toISOString();
-
   const detectedPlatform = platform || (userAgent?.toLowerCase().includes('android') ? 'android' : 'web');
 
-  // Atomically upsert the device into responder devices map
-  await responders.findOneAndUpdate(
-    { responderId },
-    {
-      $set: {
-        responderId,
-        [`devices.${deviceId}`]: {
-          deviceId,
-          installationId: installationId || deviceId,
-          fcmToken,
-          platform: detectedPlatform,
-          appVersion: appVersion || '1.0.0',
-          model: model || (detectedPlatform === 'android' ? 'Android Device' : 'Web Browser'),
-          userAgent: userAgent || 'Unknown client',
-          active: true,
-          registeredAt: now,
-          lastActiveAt: now,
-          lastUpdated: now
-        },
-        updatedAt: now
-      },
-      $setOnInsert: {
-        name: `Emergency Responder (${responderId})`,
-        role: 'responder',
-        departmentId: 'DEPT_SECURITY',
-        active: true,
-        createdAt: now
-      }
-    },
-    { upsert: true, returnDocument: 'after' }
-  );
+  const deviceData = {
+    deviceId,
+    installationId: installationId || deviceId,
+    fcmToken,
+    responderId,
+    platform: detectedPlatform,
+    appVersion: appVersion || '1.0.0',
+    model: model || (detectedPlatform === 'android' ? 'Android Device' : 'Web Browser'),
+    userAgent: userAgent || 'Unknown client',
+    active: true,
+    lastActiveAt: now,
+    lastUpdated: now,
+    updatedAt: now
+  };
+
+  await firestore.collection('responder_devices').doc(deviceId).set(deviceData, { merge: true });
+
+  // Also ensure responder profile exists in Firestore
+  await firestore.collection('emergency_responders').doc(responderId).set({
+    responderId,
+    name: `Emergency Responder (${responderId})`,
+    role: 'responder',
+    departmentId: 'DEPT_SECURITY',
+    active: true,
+    updatedAt: now
+  }, { merge: true });
 
   return {
     success: true,
@@ -175,21 +152,23 @@ export async function registerResponderDevice({
 }
 
 /**
- * Updates last active timestamp for a responder device.
+ * Updates last active timestamp for a responder device in Cloud Firestore.
  */
 export async function updateDevicePing(deviceId, responderId = RESPONDER_ID) {
   if (!deviceId) return;
-  const db = await getDb();
-  const now = new Date().toISOString();
-  await db.collection('emergency_responders').updateOne(
-    { responderId, [`devices.${deviceId}`]: { $exists: true } },
-    {
-      $set: {
-        [`devices.${deviceId}.lastActiveAt`]: now,
-        [`devices.${deviceId}.lastUpdated`]: now
-      }
-    }
-  );
+  try {
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    const now = new Date().toISOString();
+    await firestore.collection('responder_devices').doc(deviceId).set({
+      lastActiveAt: now,
+      lastUpdated: now,
+      lastPing: now,
+      status: 'online'
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[FCM] Device ping notice:', err.message);
+  }
 }
 
 /**
@@ -198,63 +177,89 @@ export async function updateDevicePing(deviceId, responderId = RESPONDER_ID) {
  */
 export async function unregisterResponderDevice(deviceId, responderId = RESPONDER_ID) {
   if (!deviceId) return;
-  const db = await getDb();
-  await db.collection('emergency_responders').updateOne(
-    { responderId },
-    {
-      $set: {
-        [`devices.${deviceId}.active`]: false,
-        [`devices.${deviceId}.lastUpdated`]: new Date().toISOString()
-      }
-    }
-  );
+  try {
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    const now = new Date().toISOString();
+    await firestore.collection('responder_devices').doc(deviceId).set({
+      active: false,
+      lastUpdated: now,
+      loggedOutAt: now
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[FCM] Device unregister notice:', err.message);
+  }
 }
 
 /**
- * Gets active registered devices for a responder.
+ * Gets active registered devices for a responder from Cloud Firestore.
  * If maskTokens is true, sensitive FCM tokens are securely redacted.
  */
 export async function getActiveResponderDevices(responderId = RESPONDER_ID, maskTokens = false) {
-  const db = await getDb();
-  const responder = await db.collection('emergency_responders').findOne({ responderId });
-  if (!responder || !responder.devices) return [];
-  const list = Object.values(responder.devices).filter(d => d && d.active && d.fcmToken);
-  if (!maskTokens) return list;
-  return list.map(d => ({
-    deviceId: d.deviceId,
-    installationId: d.installationId || d.deviceId,
-    platform: d.platform || 'web',
-    appVersion: d.appVersion || '1.0.0',
-    model: d.model || 'Device',
-    registeredAt: d.registeredAt || d.lastUpdated,
-    lastActiveAt: d.lastActiveAt || d.lastUpdated,
-    active: d.active,
-    fcmTokenMasked: d.fcmToken ? `${d.fcmToken.slice(0, 10)}...${d.fcmToken.slice(-6)}` : ''
-  }));
+  try {
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    const snap = await firestore.collection('responder_devices').get();
+    const list = [];
+    snap.forEach(doc => {
+      const d = doc.data();
+      if (d && d.active !== false && d.fcmToken) {
+        if (!responderId || d.responderId === responderId) {
+          list.push({
+            deviceId: d.deviceId || doc.id,
+            installationId: d.installationId || d.deviceId || doc.id,
+            platform: d.platform || 'web',
+            appVersion: d.appVersion || '1.0.0',
+            model: d.model || 'Device',
+            registeredAt: d.registeredAt || d.lastUpdated || '',
+            lastActiveAt: d.lastActiveAt || d.lastUpdated || '',
+            active: true,
+            fcmToken: maskTokens ? undefined : d.fcmToken,
+            fcmTokenMasked: d.fcmToken ? `${d.fcmToken.slice(0, 10)}...${d.fcmToken.slice(-6)}` : ''
+          });
+        }
+      }
+    });
+    return list;
+  } catch (err) {
+    console.warn('[FCM] Get devices notice:', err.message);
+    return [];
+  }
 }
 
 /**
- * Checks if a device ID is registered under any emergency responder.
+ * Checks if a device ID is registered in Cloud Firestore.
  */
 export async function isRegisteredDeviceId(deviceId) {
   if (!deviceId) return false;
-  const db = await getDb();
-  const responder = await db.collection('emergency_responders').findOne({ [`devices.${deviceId}`]: { $exists: true } });
-  return !!responder;
+  try {
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    const doc = await firestore.collection('responder_devices').doc(deviceId).get();
+    return doc.exists;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Logs an event in notification_audit_logs in MongoDB Atlas.
+ * Logs an event in Cloud Firestore audit logs.
  */
 export async function logNotificationAudit(incidentId, event, details = {}) {
   try {
-    const db = await getDb();
-    await db.collection('notification_audit_logs').insertOne({
-      incident_id: incidentId,
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    const now = new Date().toISOString();
+    const auditEntry = {
+      incident_id: String(incidentId),
       event,
       details,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: now
+    };
+    await firestore.collection('notification_audit_logs').add(auditEntry);
+    if (incidentId && incidentId !== 'SMS_BROADCAST' && incidentId !== 'VOICE_CALL_BROADCAST') {
+      await firestore.collection('incidents').doc(String(incidentId)).collection('audit_logs').add(auditEntry);
+    }
   } catch (e) {
     console.warn('[AuditLog] Notice logging audit:', e.message);
   }
@@ -265,13 +270,21 @@ export async function logNotificationAudit(incidentId, event, details = {}) {
  */
 export async function recordDeviceReceipt({ incidentId, deviceId, responderId = RESPONDER_ID, clientTimestamp }) {
   const now = new Date().toISOString();
+  try {
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    await firestore.collection('incidents').doc(String(incidentId)).collection('delivery_receipts').doc(String(deviceId)).set({
+      deviceId,
+      responderId,
+      deliveredAt: now,
+      clientTimestamp: clientTimestamp || now,
+      platform: 'android'
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[FCM] Receipt save notice:', err.message);
+  }
+
   await logNotificationAudit(incidentId, 'DEVICE_DELIVERY_CONFIRMED', {
-    deviceId,
-    responderId,
-    clientTimestamp: clientTimestamp || now,
-    serverTimestamp: now
-  });
-  await logNotificationAudit(incidentId, 'DEVICE_RECEIPT', {
     deviceId,
     responderId,
     clientTimestamp: clientTimestamp || now,
@@ -285,13 +298,21 @@ export async function recordDeviceReceipt({ incidentId, deviceId, responderId = 
  */
 export async function recordDeviceOpen({ incidentId, deviceId, responderId = RESPONDER_ID, clientTimestamp }) {
   const now = new Date().toISOString();
+  try {
+    initFirebaseAdmin();
+    const firestore = getFirestore();
+    await firestore.collection('incidents').doc(String(incidentId)).collection('delivery_receipts').doc(String(deviceId)).set({
+      deviceId,
+      responderId,
+      openedAt: now,
+      clientTimestamp: clientTimestamp || now,
+      platform: 'android'
+    }, { merge: true });
+  } catch (err) {
+    console.warn('[FCM] Open receipt save notice:', err.message);
+  }
+
   await logNotificationAudit(incidentId, 'NOTIFICATION_DISPLAYED', {
-    deviceId,
-    responderId,
-    clientTimestamp: clientTimestamp || now,
-    serverTimestamp: now
-  });
-  await logNotificationAudit(incidentId, 'RESPONDER_OPENED', {
     deviceId,
     responderId,
     clientTimestamp: clientTimestamp || now,
@@ -301,46 +322,43 @@ export async function recordDeviceOpen({ incidentId, deviceId, responderId = RES
 }
 
 /**
- * Checks for unacknowledged incidents older than escalationMinutes and triggers escalation reminder.
+ * Checks for unacknowledged incidents older than escalationMinutes and triggers escalation reminder via Cloud Firestore.
  */
 export async function checkAndEscalateIncidents(escalationMinutes = 3) {
   try {
-    const db = await getDb();
+    initFirebaseAdmin();
+    const firestore = getFirestore();
     const threshold = new Date(Date.now() - escalationMinutes * 60 * 1000).toISOString();
 
-    const unacknowledged = await db.collection('incidents').find({
-      status: 'DEPARTMENT_NOTIFIED',
-      created_at: { $lte: threshold },
-      escalated_at: { $exists: false }
-    }).toArray();
+    const snapshot = await firestore.collection('incidents')
+      .where('status', '==', 'DEPARTMENT_NOTIFIED')
+      .get();
 
     const results = [];
-    for (const incident of unacknowledged) {
-      const now = new Date().toISOString();
-      await db.collection('incidents').updateOne(
-        { id: incident.id },
-        {
-          $set: {
-            escalated_at: now,
-            escalation_level: 1,
-            updated_at: now
-          }
-        }
-      );
+    for (const doc of snapshot.docs) {
+      const incident = doc.data();
+      const createdAt = incident.created_at || incident.createdAt || '';
+      if (createdAt && createdAt <= threshold && !incident.escalated_at) {
+        const now = new Date().toISOString();
+        await doc.ref.update({
+          escalated_at: now,
+          escalation_level: 1,
+          updated_at: now
+        });
 
-      await logNotificationAudit(incident.id, 'ESCALATION_TRIGGERED', {
-        escalated_at: now,
-        reason: `Unacknowledged after ${escalationMinutes} minutes`
-      });
+        await logNotificationAudit(incident.id, 'ESCALATION_TRIGGERED', {
+          escalated_at: now,
+          reason: `Unacknowledged after ${escalationMinutes} minutes`
+        });
 
-      // Send urgent escalation push
-      const escIncident = {
-        ...incident,
-        priority: 'CRITICAL',
-        description: `⚠️ [ESCALATION REMINDER - UNACKNOWLEDGED]: ${incident.description || 'Immediate response required.'}`
-      };
-      const pushRes = await sendEmergencySosNotification(escIncident, true);
-      results.push({ id: incident.id, pushRes });
+        const escIncident = {
+          ...incident,
+          priority: 'CRITICAL',
+          description: `⚠️ [ESCALATION REMINDER - UNACKNOWLEDGED]: ${incident.description || 'Immediate response required.'}`
+        };
+        const pushRes = await sendEmergencySosNotification(escIncident, true);
+        results.push({ id: incident.id, pushRes });
+      }
     }
     return results;
   } catch (err) {
@@ -363,20 +381,36 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
  * Includes bounded exponential backoff for transient FCM transport errors.
  */
 export async function sendEmergencySosNotification(incident, isEscalation = false) {
-  const db = await getDb();
+  initFirebaseAdmin();
+  const firestore = getFirestore();
   let devices = [];
+
+  // Query Cloud Firestore 'responder_devices' collection directly (100% Firebase - No external DB)
   try {
-    const allResponders = await db.collection('emergency_responders').find({ active: { $ne: false } }).toArray();
-    devices = allResponders.flatMap(r => r.devices ? Object.values(r.devices).filter(d => d && d.active && d.fcmToken) : []);
-  } catch {}
-  if (!devices || devices.length === 0) {
-    devices = await getActiveResponderDevices(RESPONDER_ID);
+    const snap = await firestore.collection('responder_devices').get();
+    snap.forEach(doc => {
+      const d = doc.data();
+      if (d && d.fcmToken && d.active !== false) {
+        if (!devices.some(existing => existing.fcmToken === d.fcmToken)) {
+          devices.push({
+            deviceId: d.deviceId || doc.id,
+            fcmToken: d.fcmToken,
+            platform: d.platform || 'android',
+            responderId: d.responderId || RESPONDER_ID,
+            active: true
+          });
+        }
+      }
+    });
+  } catch (err) {
+    console.log('[FCM] Firestore responder_devices query notice:', err.message);
   }
+
   if (!devices || devices.length === 0) {
-    console.log(`[FCM] No active registered responder devices found in database. Push skipped.`);
+    console.log(`[FCM] No active registered responder devices found in Cloud Firestore. Push skipped.`);
     await logNotificationAudit(incident.id, 'NO_DEVICES_REGISTERED', {
       timestamp: new Date().toISOString(),
-      note: 'No responder devices currently registered or active'
+      note: 'No responder devices currently registered or active in Cloud Firestore'
     });
     return { fcmAcceptedCount: 0, fcmFailedCount: 0, totalDevices: 0, deliveredCount: 0 };
   }
@@ -408,6 +442,7 @@ export async function sendEmergencySosNotification(incident, isEscalation = fals
     accuracy: String(incident.location?.accuracy ?? ''),
     locationStatus: String(incident.location?.locationStatus || incident.location?.location_status || ''),
     gpsTimestamp: String(incident.location?.gpsTimestamp || incident.location?.gps_timestamp || ''),
+    studentPhone: String(incident.student_phone || incident.studentPhone || incident.phone || ''),
     description: String(incident.description || ''),
     timestamp: String(incident.created_at || new Date().toISOString()),
     isEscalation: String(isEscalation),
@@ -490,7 +525,6 @@ export async function sendEmergencySosNotification(incident, isEscalation = fals
           failed += tokensToAttempt.length;
           break;
         }
-        // Retry all on transport failure
       }
 
       attempt++;
@@ -541,28 +575,44 @@ export async function sendEmergencySosNotification(incident, isEscalation = fals
     totalFailed += res.failed;
   }
 
-  // Deactivate expired or invalid tokens in MongoDB
+  // Deactivate expired or invalid tokens in Firestore
   if (invalidTokens.length > 0) {
     try {
+      const firestore = getFirestore();
       for (const invToken of invalidTokens) {
         const devEntry = devices.find(d => d.fcmToken === invToken);
         if (devEntry?.deviceId) {
-          await db.collection('emergency_responders').updateOne(
-            { responderId: devEntry.responderId || RESPONDER_ID },
-            {
-              $set: {
-                [`devices.${devEntry.deviceId}.active`]: false,
-                [`devices.${devEntry.deviceId}.invalidationReason`]: 'FCM token expired or invalid',
-                [`devices.${devEntry.deviceId}.lastUpdated`]: new Date().toISOString()
-              }
-            }
-          );
-          console.log(`[FCM] Deactivated expired token for device ${devEntry.deviceId}`);
+          try {
+            await firestore.collection('responder_devices').doc(devEntry.deviceId).update({
+              active: false,
+              invalidationReason: 'FCM token expired or invalid',
+              lastUpdated: new Date().toISOString()
+            });
+          } catch {}
+          console.log(`[FCM] Deactivated expired token in Cloud Firestore for device ${devEntry.deviceId}`);
         }
       }
     } catch (e) {
       console.warn('[FCM] Token deactivation notice:', e.message);
     }
+  }
+
+  // Record delivery log in Cloud Firestore for audit & idempotency
+  try {
+    const firestore = getFirestore();
+    await firestore.collection('incidents').doc(String(incident.id)).collection('delivery_logs').doc('fcm_dispatch').set({
+      fcmAcceptedCount: totalAccepted,
+      fcmFailedCount: totalFailed,
+      totalTargetDevices: devices.length,
+      androidDevices: androidDevices.length,
+      webDevices: webDevices.length,
+      invalidTokensRemoved: invalidTokens.length,
+      isEscalation,
+      transportStatus: 'ACCEPTED_BY_FCM_GATEWAY',
+      timestamp: new Date().toISOString()
+    }, { merge: true });
+  } catch (err) {
+    console.log('[FCM] Notice recording Firestore delivery log:', err.message);
   }
 
   // Explicit server-side audit logging: FCM acceptance is transport only, NOT physical delivery proof

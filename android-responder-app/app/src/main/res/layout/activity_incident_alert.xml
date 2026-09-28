@@ -109,6 +109,26 @@
                     android:textStyle="bold"
                     android:layout_marginTop="2dp" />
 
+                <!-- GPS Coordinates & Accuracy -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="GPS COORDINATES"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:layout_marginTop="14dp" />
+
+                <TextView
+                    android:id="@+id/tvGpsCoordinates"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="GPS: Fetching coordinates..."
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    android:layout_marginTop="2dp" />
+
                 <!-- Student info -->
                 <TextView
                     android:layout_width="wrap_content"
@@ -123,9 +143,18 @@
                     android:id="@+id/tvStudent"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Rahul Sharma (2100101)"
+                    android:text="Student Name"
                     android:textColor="@color/text_primary"
                     android:textSize="15sp"
+                    android:layout_marginTop="2dp" />
+
+                <TextView
+                    android:id="@+id/tvStudentPhone"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Phone: Available"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"
                     android:layout_marginTop="2dp" />
 
                 <!-- Description -->
@@ -142,7 +171,7 @@
                     android:id="@+id/tvDescription"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Student collapsed in classroom. Unconscious."
+                    android:text="Emergency response requested."
                     android:textColor="@color/text_primary"
                     android:textSize="14sp"
                     android:layout_marginTop="2dp" />
@@ -150,19 +179,20 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Response Action Buttons -->
+        <!-- Primary Action: Acknowledge SOS -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnAcknowledgeAlert"
             android:layout_width="match_parent"
             android:layout_height="60dp"
-            android:text="@string/btn_acknowledge"
+            android:text="✓ ACKNOWLEDGE SOS"
             android:textColor="@color/white"
             android:textSize="16sp"
             android:textStyle="bold"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="20dp"
             app:backgroundTint="@color/success"
             app:cornerRadius="14dp" />
 
+        <!-- Emergency Action Row: CALL STUDENT & VIEW LOCATION -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -170,18 +200,54 @@
             android:layout_marginTop="12dp">
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCallStudent"
+                android:layout_width="0dp"
+                android:layout_height="54dp"
+                android:layout_weight="1"
+                android:text="📞 CALL STUDENT"
+                android:textColor="@color/white"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                app:backgroundTint="#2563EB"
+                app:cornerRadius="12dp" />
+
+            <Space
+                android:layout_width="10dp"
+                android:layout_height="wrap_content" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnViewLocation"
+                android:layout_width="0dp"
+                android:layout_height="54dp"
+                android:layout_weight="1"
+                android:text="📍 VIEW LOCATION"
+                android:textColor="@color/white"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                app:backgroundTint="#059669"
+                app:cornerRadius="12dp" />
+        </LinearLayout>
+
+        <!-- Secondary Controls: Silence Siren & Dashboard -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="10dp">
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSilenceSiren"
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="@string/btn_silence"
+                android:text="🔇 SILENCE SIREN"
                 android:textColor="@color/white"
-                android:textSize="14sp"
+                android:textSize="13sp"
                 app:backgroundTint="@color/alarm_pulse"
                 app:cornerRadius="10dp" />
 
             <Space
-                android:layout_width="12dp"
+                android:layout_width="10dp"
                 android:layout_height="wrap_content" />
 
             <com.google.android.material.button.MaterialButton
@@ -189,9 +255,9 @@
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_weight="1"
-                android:text="Open Dashboard"
+                android:text="DASHBOARD"
                 android:textColor="@color/white"
-                android:textSize="14sp"
+                android:textSize="13sp"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 app:strokeColor="@color/white"
                 app:cornerRadius="10dp" />

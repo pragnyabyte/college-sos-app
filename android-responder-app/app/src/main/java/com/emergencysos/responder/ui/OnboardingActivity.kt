@@ -41,13 +41,75 @@ class OnboardingActivity : AppCompatActivity() {
         setupButtons()
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshPermissionChecklist()
+    }
+
+    private fun refreshPermissionChecklist() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+
+        // 1. Notification Permission Status
+        val notificationsGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+        }
+
+        if (notificationsGranted) {
+            binding.btnGrantNotifications.text = "✓ Notifications Granted"
+            binding.btnGrantNotifications.setBackgroundColor(0xFF059669.toInt()) // Emerald green
+            binding.btnGrantNotifications.isEnabled = false
+        } else {
+            binding.btnGrantNotifications.text = "Grant Notification Permission"
+            binding.btnGrantNotifications.setBackgroundColor(0xFF334155.toInt())
+            binding.btnGrantNotifications.isEnabled = true
+        }
+
+        // 2. Battery Optimization Status
+        val batteryIgnored = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pm?.isIgnoringBatteryOptimizations(packageName) == true
+        } else {
+            true
+        }
+
+        if (batteryIgnored) {
+            binding.btnGrantBattery.text = "✓ Battery Unrestricted"
+            binding.btnGrantBattery.setBackgroundColor(0xFF059669.toInt())
+            binding.btnGrantBattery.isEnabled = false
+        } else {
+            binding.btnGrantBattery.text = "Disable Battery Optimization"
+            binding.btnGrantBattery.setBackgroundColor(0xFF334155.toInt())
+            binding.btnGrantBattery.isEnabled = true
+        }
+
+        // 3. Do Not Disturb Access Status
+        val dndGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            nm?.isNotificationPolicyAccessGranted == true
+        } else {
+            true
+        }
+
+        if (dndGranted) {
+            binding.btnGrantDnd.text = "✓ DND Exception Granted"
+            binding.btnGrantDnd.setBackgroundColor(0xFF059669.toInt())
+            binding.btnGrantDnd.isEnabled = false
+        } else {
+            binding.btnGrantDnd.text = "Authorize DND Exception"
+            binding.btnGrantDnd.setBackgroundColor(0xFF334155.toInt())
+            binding.btnGrantDnd.isEnabled = true
+        }
+    }
+
     private fun setupButtons() {
         // 1. Post Notifications Permission
         binding.btnGrantNotifications.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             } else {
-                Toast.makeText(this, "Notification permission already granted on this Android version.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Notification permission already active on this Android version.", Toast.LENGTH_SHORT).show()
+                refreshPermissionChecklist()
             }
         }
 
@@ -66,7 +128,7 @@ class OnboardingActivity : AppCompatActivity() {
                     }
                 } else {
                     Toast.makeText(this, "Battery optimization already disabled! ✓", Toast.LENGTH_SHORT).show()
-                    binding.btnGrantBattery.text = "✓ Battery Unrestricted"
+                    refreshPermissionChecklist()
                 }
             }
         }
@@ -80,7 +142,7 @@ class OnboardingActivity : AppCompatActivity() {
                     startActivity(intent)
                 } else {
                     Toast.makeText(this, "Do Not Disturb policy access already granted! ✓", Toast.LENGTH_SHORT).show()
-                    binding.btnGrantDnd.text = "✓ DND Exception Granted"
+                    refreshPermissionChecklist()
                 }
             }
         }

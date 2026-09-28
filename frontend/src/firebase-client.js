@@ -547,6 +547,8 @@ export async function createIncidentInFirestore(payload, user) {
     category_id: categoryId,
     student_id: user.id,
     student_name: user.name,
+    student_phone: String(user.phone || b.phone || b.student_phone || '').trim(),
+    studentPhone: String(user.phone || b.phone || b.student_phone || '').trim(),
     description: String(b.description || '').trim(),
     location: {
       building: building || (lat != null ? 'Campus (GPS Coordinates Attached)' : 'Campus'),

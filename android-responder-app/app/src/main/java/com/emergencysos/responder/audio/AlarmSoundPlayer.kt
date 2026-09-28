@@ -53,15 +53,24 @@ object AlarmSoundPlayer {
 
         // 2. Play Alarm audio using USAGE_ALARM stream (routes via Alarm volume, independent of silent ringer)
         try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 10
+            val currentVol = audioManager?.getStreamVolume(AudioManager.STREAM_ALARM) ?: 5
+            if (currentVol < (maxVol * 0.7).toInt()) {
+                try {
+                    audioManager?.setStreamVolume(AudioManager.STREAM_ALARM, (maxVol * 0.85).toInt(), 0)
+                } catch (_: Exception) {}
+            }
+
             val audioAttributes = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ALARM)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                 .build()
 
-            // Resolve sound: bundled emergency siren or fallback to system alarm
+            // Resolve sound: bundled emergency siren via compiled resource ID or fallback to system alarm
             val sirenUri: Uri = try {
-                Uri.parse("android.resource://${context.packageName}/raw/emergency_siren")
+                Uri.parse("android.resource://${context.packageName}/${R.raw.emergency_siren}")
             } catch (e: Exception) {
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)

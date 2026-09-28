@@ -71,6 +71,14 @@ service cloud.firestore {
       match /delivery_logs/{logId} {
         allow read, write: if true;
       }
+      match /audit_logs/{logId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Root notification audit logs
+    match /notification_audit_logs/{auditId} {
+      allow read, write: if true;
     }
   }
 }

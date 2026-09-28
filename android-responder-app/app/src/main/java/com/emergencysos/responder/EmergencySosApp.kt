@@ -24,7 +24,7 @@ class EmergencySosApp : Application() {
             val importance = NotificationManager.IMPORTANCE_HIGH
 
             val soundUri = try {
-                android.net.Uri.parse("android.resource://${packageName}/raw/emergency_siren")
+                android.net.Uri.parse("android.resource://${packageName}/${R.raw.emergency_siren}")
             } catch (e: Exception) {
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)

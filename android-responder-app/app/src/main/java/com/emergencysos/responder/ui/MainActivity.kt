@@ -88,12 +88,16 @@ class MainActivity : AppCompatActivity() {
                         EmergencyAlertForegroundService.startEmergencyAlert(
                             context = this@MainActivity,
                             incidentId = newlyAdded.id,
-                            category = newlyAdded.categoryId,
+                            category = newlyAdded.categoryId ?: "Emergency",
                             priority = newlyAdded.priority,
-                            studentName = newlyAdded.studentName,
-                            studentId = newlyAdded.studentId,
+                            studentName = newlyAdded.studentName ?: "Student",
+                            studentId = newlyAdded.studentId ?: "",
                             location = locStr.ifEmpty { "Campus" },
-                            description = newlyAdded.description
+                            description = newlyAdded.description ?: "",
+                            studentPhone = newlyAdded.studentPhone ?: "",
+                            latitude = newlyAdded.location?.latitude,
+                            longitude = newlyAdded.location?.longitude,
+                            accuracy = newlyAdded.location?.accuracy
                         )
                     }
                 }
@@ -219,12 +223,16 @@ class MainActivity : AppCompatActivity() {
                                 EmergencyAlertForegroundService.startEmergencyAlert(
                                     context = this@MainActivity,
                                     incidentId = inc.id,
-                                    category = inc.categoryId,
+                                    category = inc.categoryId ?: "Emergency",
                                     priority = inc.priority,
-                                    studentName = inc.studentName,
-                                    studentId = inc.studentId,
+                                    studentName = inc.studentName ?: "Student",
+                                    studentId = inc.studentId ?: "",
                                     location = locStr.ifEmpty { "Campus" },
-                                    description = inc.description
+                                    description = inc.description ?: "",
+                                    studentPhone = inc.studentPhone ?: "",
+                                    latitude = inc.location?.latitude,
+                                    longitude = inc.location?.longitude,
+                                    accuracy = inc.location?.accuracy
                                 )
                                 break
                             }
@@ -285,8 +293,12 @@ class MainActivity : AppCompatActivity() {
             putExtra("priority", incident.priority)
             putExtra("student_name", incident.studentName)
             putExtra("student_id", incident.studentId)
+            putExtra("student_phone", incident.studentPhone ?: "")
             putExtra("location", "${incident.location?.building ?: ""} · ${incident.location?.floor ?: ""} · ${incident.location?.room ?: ""}")
             putExtra("description", incident.description)
+            incident.location?.latitude?.let { putExtra("latitude", it) }
+            incident.location?.longitude?.let { putExtra("longitude", it) }
+            incident.location?.accuracy?.let { putExtra("accuracy", it) }
         }
         startActivity(intent)
     }
