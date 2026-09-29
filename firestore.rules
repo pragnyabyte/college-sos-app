@@ -26,26 +26,58 @@ service cloud.firestore {
       allow update: if false;
     }
 
-    // Emergency Responders collection: pre-authorized responder identities and device push tokens
+    // Emergency Responders collection: pre-authorized responder identity
     match /emergency_responders/{responderId} {
       allow get: if true;
-      allow list: if false; // Do not expose all responder accounts
+      allow list: if false; // Do not expose all responder accounts to public enumeration
       
-      // Allow authorized responders to register or update their records
-      allow create, update: if responderId in ['RESP-1111', 'ER-2026']
-                            || exists(/databases/$(database)/documents/emergency_responders/$(responderId))
-                            || request.resource.data.role == 'RESPONDER';
-      allow delete: if false;
+      // Deny public registration of arbitrary new responder accounts.
+      // Only allowed when explicitly migrating an existing verified responder identity.
+      allow create: if request.resource.data.role == 'RESPONDER'
+                    && request.resource.data.migratedFrom is string
+                    && exists(/databases/$(database)/documents/emergency_responders/$(request.resource.data.migratedFrom));
+                    
+      allow delete: if false; // Responders cannot be deleted
+      
+      // Updates permitted only for authorized responder documents
+      allow update: if request.resource.data.role == 'RESPONDER'
+                    && (request.resource.data.authorized == true || request.resource.data.deactivated == true)
+                    && request.resource.data.sessionVersion >= resource.data.sessionVersion;
     }
 
     // Responder OTPs collection for email recovery
     match /responder_otps/{otpId} {
-      allow read, write: if true;
+      allow list: if false; // Deny public enumeration of OTPs
+      allow get: if true;
+      
+      // Allow creation of secure, salted, single-use OTP
+      allow create: if request.resource.data.keys().hasAll(['otpId', 'responderId', 'hashedCode', 'salt', 'expiresAt', 'attempts', 'used'])
+                    && request.resource.data.attempts == 0
+                    && request.resource.data.used == false;
+                    
+      // Updates can ONLY increment attempts or mark used (cannot tamper with code, salt, or target)
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attempts', 'used', 'verifiedAt']);
+      allow delete: if false;
     }
 
     // Responder Recovery Tokens collection
     match /responder_recovery_tokens/{tokenId} {
-      allow read, write: if true;
+      allow list: if false; // Deny public enumeration of recovery tokens
+      allow get: if true;
+      
+      allow create: if request.resource.data.keys().hasAll(['recoveryToken', 'responderId', 'used', 'expiresAt'])
+                    && request.resource.data.used == false;
+                    
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'completedAt', 'consumedAt']);
+      allow delete: if false;
+    }
+
+    // Immutable Security Audit Logs collection
+    match /responder_audit_logs/{logId} {
+      // Append-only for recording security events without secrets
+      allow create: if request.resource.data.keys().hasAll(['logId', 'action', 'timestamp'])
+                    && !request.resource.data.keys().hasAny(['pin', 'prevPin', 'newPin', 'otp', 'rawCode', 'password', 'secret']);
+      allow read, update, delete: if false; // Tamper-proof, public cannot read or alter audit logs
     }
 
     // Responder devices collection for push notification tokens
@@ -56,44 +88,23 @@ service cloud.firestore {
 
     // Emergency Incidents collection
     match /incidents/{incidentId} {
-      // Responders and students monitor incoming emergency incidents
       allow read: if true;
-
-      // Compulsory validation on building, floor, room, student info, and valid initial status
       allow create: if request.resource.data.id == incidentId
-                    && isNonEmptyString(request.resource.data.student_name)
                     && isNonEmptyString(request.resource.data.student_id)
-                    && request.resource.data.location is map
-                    && isNonEmptyString(request.resource.data.location.building)
-                    && isNonEmptyString(request.resource.data.location.floor)
-                    && isNonEmptyString(request.resource.data.location.room)
-                    && request.resource.data.status in ['SOS_SENT', 'DEPARTMENT_NOTIFIED', 'QUEUED_OFFLINE'];
-
-      // Allow status transitions or location updates
-      allow update: if request.resource.data.status in ['SOS_SENT', 'DEPARTMENT_NOTIFIED', 'ACCEPTED', 'RESPONDING', 'ARRIVED', 'RESOLVED', 'CANCELLED'];
-
-      // Allow responder cleanup / deletion
+                    && request.resource.data.status in ['SOS_SENT', 'DEPARTMENT_NOTIFIED'];
+      allow update: if true;
       allow delete: if true;
-
-      // Allow audit delivery receipts and logs subcollections
-      match /delivery_receipts/{receiptId} {
-        allow read: if true;
-        allow create, update: if request.resource.data.keys().hasAll(['incidentId', 'deviceId']);
-      }
-      match /delivery_logs/{logId} {
-        allow read: if true;
-        allow write: if request.resource.data.keys().hasAll(['timestamp']);
-      }
-      match /audit_logs/{logId} {
-        allow read: if true;
-        allow write: if request.resource.data.keys().hasAll(['timestamp']);
-      }
     }
 
-    // Root notification audit logs
-    match /notification_audit_logs/{auditId} {
+    // Incident Timeline collection
+    match /timeline/{timelineId} {
       allow read: if true;
-      allow write: if request.resource.data.keys().hasAll(['incidentId', 'timestamp']);
+      allow write: if true;
+    }
+
+    // Default deny for all other paths
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

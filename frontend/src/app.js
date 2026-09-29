@@ -27,7 +27,10 @@ import {
   verifyResponderEmailOtp,
   recoverResponderCredentials,
   validateResponderSession,
-  attachResponderSessionWatcherFirestore
+  attachResponderSessionWatcherFirestore,
+  recordSecurityAuditEvent,
+  enrollResponderRecoveryEmail,
+  getResponderSecurityStatus
 } from './firebase-client.js';
 import {
   initAudio,
@@ -183,13 +186,17 @@ const state = {
   retry: 0,
   showResetModal: false,
   showForgotModal: false,
+  showEnrollModal: false,
+  responderSecurityStatus: null,
+  enrollModalError: '',
+  enrollModalSuccess: '',
+  enrollModalBusy: false,
   forgotStep: 'email',
   forgotEmail: '',
   forgotOtpId: '',
   forgotOtpExpiresAt: 0,
   forgotMaskedEmail: '',
   forgotRecoveryToken: '',
-  forgotDebugCode: '',
   forgotResendCooldown: 0,
   securityResetChoice: 'both',
   securityForgotChoice: 'both',
@@ -476,7 +483,7 @@ const roleLabel = r => ({
 function isResponderUser(u) {
   if (!u) return false;
   const r = String(u.role || '').toUpperCase();
-  return r === 'RESPONDER' || u.id === 'ER-2026' || u.id === 'RESP-1111';
+  return r === 'RESPONDER' || u.id === 'ER-2026';
 }
 
 let responderWatcherUnsub = null;
@@ -510,9 +517,10 @@ function forceLogoutAllDevices(reasonMessage) {
   state.activeAlarm = null;
   state.showResetModal = false;
   state.showForgotModal = false;
+  state.showEnrollModal = false;
   stopEmergencyAlarm();
 
-  state.securityAlert = reasonMessage || 'Your responder session has ended. Please log in again.';
+  state.securityAlert = reasonMessage || 'Your responder credentials have been updated. All previous responder sessions have been logged out. Please sign in again.';
   render();
 }
 
@@ -967,7 +975,7 @@ async function api(path, options = {}) {
     const subAction = parts[4];
 
     if (method === 'DELETE') {
-      await deleteIncidentFromFirestore(incId);
+      await deleteIncidentFromFirestore(incId, state.user);
       return { success: true, id: incId };
     }
 
@@ -2044,6 +2052,10 @@ function startOtpTimer() {
 }
 
 function renderSecuritySettingsSection() {
+  const secStatus = state.responderSecurityStatus;
+  const isEnrolled = secStatus?.hasRecoveryEmail !== false;
+  const maskedEmail = secStatus?.maskedEmail || 'ji••••@college.edu';
+
   return `
     <section class="securitySettingsSection" id="security-settings" aria-label="Security Settings">
       <div class="securitySectionHeader">
@@ -2081,14 +2093,32 @@ function renderSecuritySettingsSection() {
             <div class="securityCardIcon">✉️</div>
           </div>
           <h3>Forgot Registration No. / PIN?</h3>
-          <p>For responders who have forgotten their credentials. Verify your identity with a secure OTP sent to your registered responder email.</p>
+          <p>For responders who have forgotten their credentials. Verify your identity with a secure OTP sent to your pre-enrolled responder email.</p>
           <ul class="securityFeatureList">
-            <li>✓ No previous credentials required</li>
-            <li>✓ Cryptographic 6-digit email OTP</li>
+            <li>✓ Requires pre-enrolled verified email</li>
+            <li>✓ Single-use 6-digit cryptographic OTP</li>
             <li>✓ Forces multi-device logout on recovery</li>
           </ul>
           <button type="button" class="btnSecurityAction btnSecondaryForgot" data-action="open-forgot-modal" id="btn-open-forgot-modal">
             <span>Recover Credentials</span> <span class="arrowIcon">→</span>
+          </button>
+        </div>
+
+        <!-- Security Guard: Verified Recovery Email -->
+        <div class="securityCard recoveryEmailCard" id="card-recovery-email">
+          <div class="securityCardTop">
+            <span class="securityCardBadge greenBadge">Email Protection</span>
+            <div class="securityCardIcon">🔒</div>
+          </div>
+          <h3>Verified Recovery Email</h3>
+          <p>Email recovery is restricted exclusively to the pre-enrolled, verified email address. Arbitrary email addresses cannot be used to recover or take over this responder account.</p>
+          <ul class="securityFeatureList">
+            <li>✓ Protected by current PIN verification</li>
+            <li>✓ Enrolled: <b>${esc(maskedEmail)}</b></li>
+            <li>✓ Arbitrary account takeover strictly prevented</li>
+          </ul>
+          <button type="button" class="btnSecurityAction btnTertiaryEnroll" data-action="open-enroll-modal" id="btn-open-enroll-modal">
+            <span>Manage Recovery Email</span> <span class="arrowIcon">→</span>
           </button>
         </div>
       </div>
@@ -2268,11 +2298,6 @@ function renderForgotCredentialsModal() {
               <span class="stepNum">Step 2 of 3</span>
               <h4>Enter Verification Code</h4>
               <p>A 6-digit verification code has been dispatched to <b>${esc(state.forgotMaskedEmail || state.forgotEmail)}</b>.</p>
-              ${state.forgotDebugCode ? `
-                <div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:12.5px;color:#166534;">
-                  🛡️ <b>Verified Email OTP Code:</b> <code style="font-size:15px;font-weight:bold;letter-spacing:2px;background:#dcfce7;padding:2px 8px;border-radius:4px;">${state.forgotDebugCode}</code>
-                </div>
-              ` : ''}
             </div>
 
             <div class="securityFieldGroup">
@@ -2363,6 +2388,78 @@ function renderForgotCredentialsModal() {
             </div>
           </form>
         ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderEnrollEmailModal() {
+  return `
+    <div class="securityModalOverlay" id="enroll-email-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="enrollModalTitle">
+      <div class="securityModalCard">
+        <div class="securityModalHeader">
+          <div>
+            <span class="securityModalBadge" style="color:#059669;">SECURITY SETTINGS · RECOVERY ENROLLMENT</span>
+            <h3 id="enrollModalTitle">Enroll or Update Recovery Email</h3>
+          </div>
+          <button type="button" class="btnCloseSecurityModal" data-action="close-enroll-modal" aria-label="Close dialog">✕</button>
+        </div>
+
+        <form id="enrollEmailForm" class="securityForm">
+          <p class="securityFormIntro">To prevent unauthorized account takeovers, enrolling or updating the responder recovery email requires verifying your current Registration Number and PIN on the trusted backend.</p>
+
+          ${state.enrollModalError ? `
+            <div class="securityModalAlert error" role="alert">
+              <span class="alertIcon">⚠️</span>
+              <span class="alertMsg">${esc(state.enrollModalError)}</span>
+            </div>
+          ` : ''}
+
+          ${state.enrollModalSuccess ? `
+            <div class="securityModalAlert success" role="alert">
+              <span class="alertIcon">✓</span>
+              <span class="alertMsg">${esc(state.enrollModalSuccess)}</span>
+            </div>
+          ` : ''}
+
+          <!-- Authentication Section -->
+          <div class="securityFieldGroup">
+            <h4 class="fieldGroupTitle">1. Verify Current Responder Authorization</h4>
+            <div class="twoColInputs">
+              <label>Registration Number <span class="reqTag">*</span>
+                <input required type="text" id="enroll-auth-id" placeholder="e.g. ER-2026" autocomplete="off" spellcheck="false" value="${esc(state.user?.id || 'ER-2026')}">
+              </label>
+              <label>Current PIN <span class="reqTag">*</span>
+                <input required type="password" id="enroll-auth-pin" placeholder="Enter current PIN" autocomplete="off">
+              </label>
+            </div>
+          </div>
+
+          <!-- New Recovery Email -->
+          <div class="securityFieldGroup">
+            <h4 class="fieldGroupTitle">2. Specify Enrolled Recovery Email</h4>
+            <div class="twoColInputs">
+              <label>New Recovery Email <span class="reqTag">*</span>
+                <input required type="email" id="enroll-email-input" placeholder="e.g. jitendra.responder@college.edu" autocomplete="email">
+              </label>
+              <label>Confirm Recovery Email <span class="reqTag">*</span>
+                <input required type="email" id="enroll-confirm-email-input" placeholder="Repeat recovery email" autocomplete="email">
+              </label>
+            </div>
+          </div>
+
+          <div class="securityFormNotice">
+            <span>🛡️</span>
+            <small>Once enrolled, password/PIN recovery will strictly accept only this verified address. Arbitrary email addresses are rejected.</small>
+          </div>
+
+          <div class="securityModalActions">
+            <button type="button" class="secondary" data-action="close-enroll-modal" ${state.enrollModalBusy ? 'disabled' : ''}>Cancel</button>
+            <button type="submit" class="btnSubmitSecurity" ${state.enrollModalBusy ? 'disabled' : ''}>
+              ${state.enrollModalBusy ? '<span class="btnSpinner"></span> Verifying & Saving…' : 'Verify & Save Recovery Email'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   `;
@@ -2791,7 +2888,8 @@ function render() {
     (state.showAddStudentModal ? renderAddStudentModal() : '') +
     (state.deleteStudentConfirm ? renderDeleteConfirmModal() : '') +
     (state.showResetModal ? renderResetCredentialsModal() : '') +
-    (state.showForgotModal ? renderForgotCredentialsModal() : '');
+    (state.showForgotModal ? renderForgotCredentialsModal() : '') +
+    (state.showEnrollModal ? renderEnrollEmailModal() : '');
   if (state.view === 'analytics' && !state.selected) loadStats();
 }
 
@@ -3843,8 +3941,8 @@ document.addEventListener('click', async (e) => {
     (async () => {
       try {
         console.log(`%c[SOS:Delete] Permanently deleting SOS alert from Cloud Firestore: id=${incId}`, 'color:#dc2626;font-weight:bold');
-        if (incId) await deleteIncidentFromFirestore(incId);
-        if (mongoId && mongoId !== incId) await deleteIncidentFromFirestore(mongoId);
+        if (incId) await deleteIncidentFromFirestore(incId, state.user);
+        if (mongoId && mongoId !== incId) await deleteIncidentFromFirestore(mongoId, state.user);
         console.log('[SOS:Delete] Successfully deleted from Cloud Firestore.');
 
         // Broadcast to other open tabs
@@ -4116,6 +4214,7 @@ document.addEventListener('click', async (e) => {
   if (a === 'open-reset-modal') {
     state.showResetModal = true;
     state.showForgotModal = false;
+    state.showEnrollModal = false;
     state.securityModalError = '';
     state.securityModalSuccess = '';
     state.securityResetChoice = 'both';
@@ -4132,6 +4231,7 @@ document.addEventListener('click', async (e) => {
   if (a === 'open-forgot-modal' || a === 'open-login-forgot') {
     state.showForgotModal = true;
     state.showResetModal = false;
+    state.showEnrollModal = false;
     state.forgotStep = 'email';
     state.securityModalError = '';
     state.securityModalSuccess = '';
@@ -4144,6 +4244,22 @@ document.addEventListener('click', async (e) => {
     state.securityModalError = '';
     state.securityModalSuccess = '';
     if (otpTimerInterval) clearInterval(otpTimerInterval);
+    render();
+    return;
+  }
+  if (a === 'open-enroll-modal') {
+    state.showEnrollModal = true;
+    state.showResetModal = false;
+    state.showForgotModal = false;
+    state.enrollModalError = '';
+    state.enrollModalSuccess = '';
+    render();
+    return;
+  }
+  if (a === 'close-enroll-modal') {
+    state.showEnrollModal = false;
+    state.enrollModalError = '';
+    state.enrollModalSuccess = '';
     render();
     return;
   }
@@ -4181,7 +4297,6 @@ document.addEventListener('click', async (e) => {
         state.securityModalBusy = false;
         state.forgotOtpId = res.otpId;
         state.forgotOtpExpiresAt = res.expiresAt;
-        state.forgotDebugCode = res.debugCode;
         state.securityModalSuccess = res.message || 'New verification code dispatched.';
         startOtpTimer();
         render();
@@ -4395,7 +4510,7 @@ async function handleResetCredentialsSubmit(form) {
     const res = await resetResponderCredentials(prevId, prevPin, { newId, newPin });
     state.securityModalBusy = false;
     state.showResetModal = false;
-    forceLogoutAllDevices(`Credentials updated successfully! All active responder sessions across all devices have been terminated. Please sign in with your updated credentials (${res.effectiveId}).`);
+    forceLogoutAllDevices('Your responder credentials have been updated. All previous responder sessions have been logged out. Please sign in again.');
   } catch (err) {
     state.securityModalBusy = false;
     state.securityModalError = err.message || 'Credential reset failed. Please check your entries.';
@@ -4420,13 +4535,17 @@ async function handleForgotEmailSubmit(form) {
   try {
     const res = await requestResponderEmailOtp(email);
     state.securityModalBusy = false;
+    if (!res.otpId) {
+      state.securityModalSuccess = 'If this email is registered, a verification code will be sent.';
+      render();
+      return;
+    }
     state.forgotStep = 'otp';
     state.forgotEmail = email;
     state.forgotOtpId = res.otpId;
     state.forgotMaskedEmail = res.maskedEmail || email;
     state.forgotOtpExpiresAt = res.expiresAt;
-    state.forgotDebugCode = res.debugCode;
-    state.securityModalSuccess = res.message || 'If this email is registered, a verification code has been dispatched.';
+    state.securityModalSuccess = 'If this email is registered, a verification code will be sent.';
     startOtpTimer();
     render();
   } catch (err) {
@@ -4515,10 +4634,60 @@ async function handleForgotResetSubmit(form) {
     const res = await recoverResponderCredentials(state.forgotRecoveryToken, { newId, newPin });
     state.securityModalBusy = false;
     state.showForgotModal = false;
-    forceLogoutAllDevices(`Credentials successfully recovered! All previous responder sessions have been terminated. Please sign in with your updated credentials (${res.effectiveId}).`);
+    forceLogoutAllDevices('Your responder credentials have been updated. All previous responder sessions have been logged out. Please sign in again.');
   } catch (err) {
     state.securityModalBusy = false;
     state.securityModalError = err.message || 'Credential recovery failed. Please try again.';
+    render();
+  }
+}
+
+async function handleEnrollEmailSubmit(form) {
+  const authId = String(form.querySelector('#enroll-auth-id')?.value || '').trim();
+  const authPin = String(form.querySelector('#enroll-auth-pin')?.value || '').trim();
+  const newEmail = String(form.querySelector('#enroll-email-input')?.value || '').trim().toLowerCase();
+  const confirmEmail = String(form.querySelector('#enroll-confirm-email-input')?.value || '').trim().toLowerCase();
+
+  state.enrollModalError = '';
+  state.enrollModalSuccess = '';
+
+  if (!authId || !authPin) {
+    state.enrollModalError = 'Registration Number and PIN are required.';
+    render();
+    return;
+  }
+  if (!newEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+    state.enrollModalError = 'Please enter a valid email address.';
+    render();
+    return;
+  }
+  if (newEmail !== confirmEmail) {
+    state.enrollModalError = 'Email addresses do not match. Please verify.';
+    render();
+    return;
+  }
+
+  state.enrollModalBusy = true;
+  render();
+
+  try {
+    const res = await enrollResponderRecoveryEmail(authId, authPin, newEmail);
+    state.enrollModalBusy = false;
+    state.enrollModalSuccess = res.message || 'Recovery email successfully verified and enrolled.';
+    if (state.responderSecurityStatus) {
+      state.responderSecurityStatus.hasRecoveryEmail = true;
+      state.responderSecurityStatus.maskedEmail = res.maskedEmail;
+    } else {
+      state.responderSecurityStatus = { hasRecoveryEmail: true, maskedEmail: res.maskedEmail };
+    }
+    setTimeout(() => {
+      state.showEnrollModal = false;
+      render();
+    }, 1800);
+    render();
+  } catch (err) {
+    state.enrollModalBusy = false;
+    state.enrollModalError = err.message || 'Failed to enroll recovery email.';
     render();
   }
 }
@@ -4540,6 +4709,9 @@ app.addEventListener('submit', (e) => {
   } else if (e.target.id === 'forgotResetForm') {
     e.preventDefault();
     handleForgotResetSubmit(e.target);
+  } else if (e.target.id === 'enrollEmailForm') {
+    e.preventDefault();
+    handleEnrollEmailSubmit(e.target);
   }
 });
 

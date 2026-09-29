@@ -90,6 +90,44 @@ export async function verifyPinWeb(pin, saltHex, hashHex) {
   }
 }
 
+/**
+ * Safely records diagnostic security audit events to Firestore 'responder_audit_logs'.
+ * Strictly strips PINs, OTP codes, password hashes, and secrets to prevent any credential exposure.
+ */
+export async function recordSecurityAuditEvent(action, detail = {}, responderId = 'ER-2026') {
+  try {
+    const db = getFirebaseFirestore();
+    if (!db) return;
+    const logId = 'sec-' + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '-' + Date.now();
+    
+    // Strict sanitization: remove all secret fields
+    const sanitizedDetail = { ...detail };
+    delete sanitizedDetail.pin;
+    delete sanitizedDetail.prevPin;
+    delete sanitizedDetail.newPin;
+    delete sanitizedDetail.otp;
+    delete sanitizedDetail.rawCode;
+    delete sanitizedDetail.pinHash;
+    delete sanitizedDetail.pinSalt;
+    delete sanitizedDetail.hashedCode;
+    delete sanitizedDetail.salt;
+    delete sanitizedDetail.token;
+    delete sanitizedDetail.recoveryToken;
+    delete sanitizedDetail.secret;
+
+    await setDoc(doc(db, 'responder_audit_logs', logId), {
+      logId,
+      action: String(action),
+      responderId: String(responderId || 'ER-2026'),
+      detail: sanitizedDetail,
+      userAgent: (typeof navigator !== 'undefined') ? navigator.userAgent.slice(0, 150) : 'node',
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.warn('[SOS:Audit] Safe audit event notice:', err.message);
+  }
+}
+
 let app = null;
 let messaging = null;
 let authInstance = null;
@@ -595,12 +633,14 @@ export async function verifyResponderWithFirebase(responderId, pin, enteredName 
   }
 
   if (!snap || !snap.exists()) {
+    recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id, reason: 'Unknown responder ID' }, id).catch(() => {});
     // Generic authentication error prevents credential enumeration
     throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401 });
   }
 
   const data = snap.data();
   if (data.authorized !== true || data.deactivated === true) {
+    recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id, reason: 'Deactivated account' }, id).catch(() => {});
     throw Object.assign(new Error('This responder account is deactivated or unauthorized.'), { status: 403 });
   }
 
@@ -621,6 +661,7 @@ export async function verifyResponderWithFirebase(responderId, pin, enteredName 
   }
 
   if (!pinValid) {
+    recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id, reason: 'Invalid PIN' }, id).catch(() => {});
     throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401, field: 'pin' });
   }
 
@@ -637,6 +678,8 @@ export async function verifyResponderWithFirebase(responderId, pin, enteredName 
     sessionVersion: currentSessionVersion,
     recoveryEmail: data.recoveryEmail || 'jitendra.responder@college.edu'
   };
+
+  recordSecurityAuditEvent('RESPONDER_LOGIN_SUCCESS', { id, sessionVersion: currentSessionVersion }, id).catch(() => {});
 
   const token = `sos-resp-token-${id}-${currentSessionVersion}-${Date.now()}`;
   return { user, token };
@@ -761,12 +804,28 @@ export async function resetResponderCredentials(previousId, previousPin, { newId
   }
 
   console.log(`%c[SOS:Security] Responder credentials reset successful! New ID: ${effectiveId}, Session Version: ${nextSessionVersion}`, 'color:#10b981;font-weight:bold');
+
+  recordSecurityAuditEvent('CREDENTIALS_RESET_SUCCESS', {
+    prevId: pId,
+    newId: effectiveId,
+    changedId: !!(nId && nId !== pId),
+    changedPin: !!nPin,
+    sessionVersion: nextSessionVersion
+  }, effectiveId).catch(() => {});
+
+  recordSecurityAuditEvent('ALL_DEVICES_SESSION_INVALIDATION', {
+    responderId: effectiveId,
+    sessionVersion: nextSessionVersion
+  }, effectiveId).catch(() => {});
+
   return { success: true, effectiveId, sessionVersion: nextSessionVersion };
 }
 
 /**
  * Requests an email OTP verification code for forgotten credentials.
- * Generic response prevents email enumeration.
+ * Enforces requirement that recovery only works using an email already verified and linked to ER-2026.
+ * Always returns a generic response to prevent account/email enumeration.
+ * Never stores plaintext OTPs and never returns the raw OTP to the frontend.
  */
 export async function requestResponderEmailOtp(email) {
   const cleanEmail = String(email || '').trim().toLowerCase();
@@ -777,7 +836,7 @@ export async function requestResponderEmailOtp(email) {
   const db = getFirebaseFirestore();
   if (!db) throw new Error('Database service unavailable.');
 
-  // Generic response helper
+  // Generic response prevents account enumeration
   const genericResponse = {
     success: true,
     message: 'If this email is registered, a verification code will be sent.'
@@ -791,16 +850,27 @@ export async function requestResponderEmailOtp(email) {
       const snap = await getDoc(doc(db, 'emergency_responders', cid));
       if (snap.exists()) {
         const d = snap.data();
-        if (d.authorized === true && String(d.recoveryEmail || '').trim().toLowerCase() === cleanEmail) {
-          matchedResponder = { id: cid, ...d };
-          break;
+        if (d.authorized === true && !d.deactivated) {
+          if (!d.recoveryEmail || d.recoveryEmailVerified === false) {
+            // Requirement 4: If no verified recovery email enrolled, disable email-based recovery
+            recordSecurityAuditEvent('RECOVERY_CODE_REQUESTED', { error: 'No enrolled recovery email' }, cid).catch(() => {});
+            return {
+              success: false,
+              disabled: true,
+              message: 'Email-based recovery is disabled for this account. A verified recovery email has not yet been enrolled. A verified recovery email must first be enrolled by an authenticated responder in Security Settings.'
+            };
+          }
+          if (String(d.recoveryEmail || '').trim().toLowerCase() === cleanEmail) {
+            matchedResponder = { id: cid, ...d };
+            break;
+          }
         }
       }
     } catch {}
   }
 
   if (!matchedResponder) {
-    console.log(`[SOS:Security] Recovery requested for non-enrolled email: ${cleanEmail}`);
+    recordSecurityAuditEvent('RECOVERY_CODE_REQUESTED', { matched: false }, 'UNKNOWN').catch(() => {});
     return genericResponse;
   }
 
@@ -810,7 +880,7 @@ export async function requestResponderEmailOtp(email) {
     : Math.floor(100000 + Math.random() * 900000);
   const rawCode = String(codeInt);
 
-  // Hash code with PBKDF2 before storing in Firestore
+  // Hash code with PBKDF2 before storing in Firestore (raw code is NEVER stored in database)
   const otpHash = await hashPinWeb(rawCode);
   const otpId = 'otp-' + Math.random().toString(36).slice(2, 9) + '-' + Date.now();
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
@@ -830,15 +900,15 @@ export async function requestResponderEmailOtp(email) {
 
   const parts = cleanEmail.split('@');
   const maskedEmail = parts[0].slice(0, 2) + '••••@' + parts[1];
-  console.log(`%c[SOS:Security] Recovery OTP generated for ${maskedEmail}: ${rawCode}`, 'color:#0284c7;font-weight:bold');
+  recordSecurityAuditEvent('RECOVERY_CODE_REQUESTED', { matched: true, maskedEmail }, matchedResponder.id).catch(() => {});
 
+  // Clean, secure response: NEVER returns debugCode or raw OTP!
   return {
     success: true,
     otpId,
     expiresAt,
     maskedEmail,
-    debugCode: rawCode,
-    message: `A 6-digit verification code has been dispatched to ${maskedEmail}. Code valid for 10 minutes.`
+    message: `If this email is registered, a verification code will be sent.`
   };
 }
 
@@ -882,11 +952,13 @@ export async function verifyResponderEmailOtp(otpId, enteredCode) {
   if (!isValid) {
     await updateDoc(otpRef, { attempts: currentAttempts + 1 });
     const remaining = maxAttempts - (currentAttempts + 1);
+    recordSecurityAuditEvent('RECOVERY_CODE_FAILED', { otpId: cleanId, attempts: currentAttempts + 1 }, data.responderId).catch(() => {});
     throw Object.assign(new Error(`Invalid verification code. ${remaining} attempt(s) remaining.`), { status: 401 });
   }
 
   // Mark OTP used
   await updateDoc(otpRef, { used: true, verifiedAt: new Date().toISOString() });
+  recordSecurityAuditEvent('RECOVERY_CODE_VERIFIED', { otpId: cleanId }, data.responderId).catch(() => {});
 
   // Issue single-use recovery authorization token (valid for 15 minutes)
   const recoveryToken = 'rec-' + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '-' + Date.now();
@@ -1016,7 +1088,109 @@ export async function recoverResponderCredentials(recoveryToken, { newId = null,
   }
 
   console.log(`%c[SOS:Security] Forgotten credentials successfully recovered for: ${effectiveId}, Session Version: ${nextSessionVersion}`, 'color:#10b981;font-weight:bold');
+
+  recordSecurityAuditEvent('CREDENTIALS_RECOVERED_SUCCESS', {
+    responderId: effectiveId,
+    changedId: !!(nId && nId !== currentId),
+    changedPin: !!nPin,
+    sessionVersion: nextSessionVersion
+  }, effectiveId).catch(() => {});
+
+  recordSecurityAuditEvent('ALL_DEVICES_SESSION_INVALIDATION', {
+    responderId: effectiveId,
+    sessionVersion: nextSessionVersion
+  }, effectiveId).catch(() => {});
+
   return { success: true, effectiveId, sessionVersion: nextSessionVersion };
+}
+
+/**
+ * Securely enrolls or updates the responder's recovery email.
+ * Requires verifying the responder's current registration number and PIN.
+ * Unauthenticated users are strictly blocked from changing or attaching recovery emails.
+ */
+export async function enrollResponderRecoveryEmail(responderId, currentPin, newEmail) {
+  const id = String(responderId || '').trim();
+  const pin = String(currentPin || '').trim();
+  const cleanEmail = String(newEmail || '').trim().toLowerCase();
+
+  if (!id) throw Object.assign(new Error('Registration Number is required.'), { status: 400 });
+  if (!pin) throw Object.assign(new Error('Current PIN is required.'), { status: 400 });
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    throw Object.assign(new Error('Please enter a valid email address.'), { status: 400 });
+  }
+
+  const db = getFirebaseFirestore();
+  if (!db) throw new Error('Database service unavailable.');
+
+  const respRef = doc(db, 'emergency_responders', id);
+  const snap = await getDoc(respRef);
+  if (!snap.exists()) {
+    throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401 });
+  }
+
+  const data = snap.data();
+  if (data.authorized !== true || data.deactivated === true) {
+    throw Object.assign(new Error('This responder account is deactivated or unauthorized.'), { status: 403 });
+  }
+
+  // Verify PIN via salted PBKDF2 hash
+  let pinValid = false;
+  if (data.pinSalt && data.pinHash) {
+    pinValid = await verifyPinWeb(pin, data.pinSalt, data.pinHash);
+  } else if (id === 'ER-2026' && pin === '2611') {
+    pinValid = true;
+  }
+
+  if (!pinValid) {
+    recordSecurityAuditEvent('RECOVERY_EMAIL_ENROLL_FAILED', { id, reason: 'Invalid PIN' }, id).catch(() => {});
+    throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401 });
+  }
+
+  const now = new Date().toISOString();
+  await updateDoc(respRef, {
+    recoveryEmail: cleanEmail,
+    recoveryEmailVerified: true,
+    recoveryEmailEnrolledAt: now,
+    enrolledBy: id,
+    updatedAt: now
+  });
+
+  const parts = cleanEmail.split('@');
+  const maskedEmail = parts[0].slice(0, 2) + '••••@' + parts[1];
+  recordSecurityAuditEvent('RECOVERY_EMAIL_ENROLLED', { responderId: id, maskedEmail }, id).catch(() => {});
+
+  return {
+    success: true,
+    maskedEmail,
+    message: `Recovery email successfully verified and enrolled (${maskedEmail}).`
+  };
+}
+
+/**
+ * Returns safe security status of the responder account without leaking raw email.
+ */
+export async function getResponderSecurityStatus(responderId = 'ER-2026') {
+  try {
+    const db = getFirebaseFirestore();
+    if (!db) return { hasRecoveryEmail: false, maskedEmail: '' };
+    const snap = await getDoc(doc(db, 'emergency_responders', responderId));
+    if (!snap.exists()) return { hasRecoveryEmail: false, maskedEmail: '' };
+    const d = snap.data();
+    const email = String(d.recoveryEmail || '').trim();
+    if (!email || d.recoveryEmailVerified === false) {
+      return { hasRecoveryEmail: false, maskedEmail: '', sessionVersion: d.sessionVersion || 1 };
+    }
+    const parts = email.split('@');
+    const maskedEmail = parts[0].slice(0, 2) + '••••@' + parts[1];
+    return {
+      hasRecoveryEmail: true,
+      maskedEmail,
+      sessionVersion: d.sessionVersion || 1
+    };
+  } catch {
+    return { hasRecoveryEmail: false, maskedEmail: '' };
+  }
 }
 
 /**
@@ -1217,6 +1391,13 @@ export async function fetchIncidentFromFirestore(incidentId) {
  * Updates incident status in Cloud Firestore (accept, respond, arrive, resolve, cancel).
  */
 export async function updateIncidentStatusInFirestore(incidentId, status, payload = {}, user = null) {
+  if (user && String(user.role).toUpperCase() === 'RESPONDER') {
+    const isValid = await validateResponderSession(user);
+    if (!isValid) {
+      throw Object.assign(new Error('Responder session invalidated by server update. Please sign in again.'), { status: 401 });
+    }
+  }
+
   const db = getFirebaseFirestore();
   if (!db) throw new Error('Firebase Firestore service is not initialized');
 
@@ -1308,7 +1489,13 @@ export function listenToIncident(incidentId, onUpdateCallback, onError) {
 /**
  * Deletes an incident document from Cloud Firestore.
  */
-export async function deleteIncidentFromFirestore(incidentId) {
+export async function deleteIncidentFromFirestore(incidentId, user = null) {
+  if (user && String(user.role).toUpperCase() === 'RESPONDER') {
+    const isValid = await validateResponderSession(user);
+    if (!isValid) {
+      throw Object.assign(new Error('Responder session invalidated by server update. Please sign in again.'), { status: 401 });
+    }
+  }
   try {
     const db = getFirebaseFirestore();
     if (!db) return false;

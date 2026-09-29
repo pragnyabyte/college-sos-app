@@ -3446,6 +3446,25 @@ footer {
   border-color: #94a3b8;
 }
 
+.btnTertiaryEnroll {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.btnTertiaryEnroll:hover {
+  background: rgba(16, 185, 129, 0.22);
+  color: #6ee7b7;
+  border-color: #10b981;
+}
+
+.securityCardBadge.greenBadge {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+
 /* Security Modal Dialogs */
 .securityModalOverlay {
   position: fixed;
