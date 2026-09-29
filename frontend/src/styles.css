@@ -2433,4 +2433,821 @@ footer {
 
 .androidLocationHelp li {
   margin-bottom: 3px;
-}
+}
+
+/* ==========================================================================
+   PROMINENT STUDENT IDENTITY CARD & MOBILE-FRIENDLY RESPONDER LAYOUT
+   ========================================================================== */
+
+.studentIdentityCard {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
+  border: 1.5px solid #cbd5e1;
+  border-left: 6px solid #2563eb;
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+  position: relative;
+  transition: box-shadow 0.2s ease;
+}
+
+.studentIdentityAvatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
+}
+
+.studentIdentityInfo {
+  flex: 1;
+  min-width: 0;
+}
+
+.studentIdentityHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.studentIdentityLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.verifiedStudentBadge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #15803d;
+  background: #dcfce7;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #bbf7d0;
+}
+
+.studentIdentityName {
+  font-size: 21px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.25;
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+
+.studentIdentityMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.studentIdBadge {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e40af;
+  background: #dbeafe;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid #bfdbfe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.studentIdBadge strong {
+  font-weight: 700;
+  color: #1e3a8a;
+}
+
+.studentPhoneBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #166534;
+  background: #f0fdf4;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid #bbf7d0;
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.studentPhoneBadge:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+.studentPhoneBadge.missing {
+  color: #64748b;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  font-weight: 400;
+}
+
+.badgeStudentId {
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid #dbeafe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.badgeStudentIdSmall {
+  background: #f1f5f9;
+  color: #334155;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.alarmStudentLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 6px;
+}
+
+.alarmStudentName {
+  font-size: 15px;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.alarmStudentIdBadge {
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Mobile-Friendly Optimizations for Responders */
+@media (max-width: 640px) {
+  .studentIdentityCard {
+    padding: 12px 14px;
+    gap: 12px;
+    margin-bottom: 16px;
+    position: -webkit-sticky;
+    position: sticky;
+    top: 8px;
+    z-index: 25;
+    background: rgba(248, 250, 252, 0.96);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  }
+
+  .studentIdentityAvatar {
+    width: 44px;
+    height: 44px;
+    font-size: 22px;
+  }
+
+  .studentIdentityName {
+    font-size: 18px;
+  }
+
+  .studentIdBadge, .studentPhoneBadge {
+    font-size: 12px;
+    padding: 3px 8px;
+  }
+
+  .alarmStudentLine {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+}
+
+/* ==========================================================================
+   COMPACT REGISTERED STUDENTS BAR & MODALS (Emergency Responder Console)
+   ========================================================================== */
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleUp {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 1. Single Horizontal Registered Students Bar */
+.registeredStudentsBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 18px;
+  margin: 14px 0 20px;
+  box-shadow: 0 1px 4px rgba(16, 40, 61, 0.05);
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.studentsBarLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.studentsBarIcon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.studentsBarLabel {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--navy, #0f172a);
+}
+
+.studentsBarBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--navy);
+}
+
+.studentsBarDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #10b981;
+  display: inline-block;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+}
+
+.studentsBarCount {
+  font-weight: 800;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #047857;
+  background: #ecfdf5;
+  border: 1px solid #10b981;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 14px;
+  margin-left: 2px;
+}
+
+.studentsBarActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btnStudentsBarAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btnViewStudents {
+  background: #f1f5f9;
+  color: var(--navy);
+  border: 1px solid #cbd5e1;
+}
+
+.btnViewStudents:hover {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.btnAddStudent {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+}
+
+.btnAddStudent:hover {
+  background: #1d4ed8;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+/* 2. Modal Overlay System */
+.studentModalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.studentModalCard {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 16px;
+  width: 100%;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  animation: scaleUp 0.15s ease-out;
+}
+
+.viewStudentsCard {
+  max-width: 680px;
+}
+
+.addStudentCard {
+  max-width: 480px;
+}
+
+.deleteConfirmCard {
+  max-width: 440px;
+  padding: 24px;
+  text-align: center;
+}
+
+.studentModalHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #f1f5f9;
+  background: #f8fafc;
+}
+
+.modalHeaderTitle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modalHeaderTitle h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--navy);
+}
+
+.modalHeaderSub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.modalCountBadge {
+  font-size: 12px;
+  font-weight: 700;
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #10b981;
+  border-radius: 9999px;
+  padding: 2px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.modalHeaderRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btnModalHeaderAdd {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.btnModalHeaderAdd:hover {
+  background: #1d4ed8;
+}
+
+.btnCloseModal {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
+  transition: background 0.12s;
+}
+
+.btnCloseModal:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+/* 3. View Students List (2 Columns: Student Name | Student ID + Delete Action) */
+.modalSearchRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.modalSearchBox {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.modalSearchBox .searchIcon {
+  position: absolute;
+  left: 12px;
+  font-size: 16px;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.modalSearchBox .studentSearchInput {
+  width: 100%;
+  padding: 8px 32px 8px 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 13.5px;
+  background: #ffffff;
+  color: #0f172a;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.modalSearchBox .studentSearchInput:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.modalSearchBox .btnClearStudentSearch {
+  position: absolute;
+  right: 8px;
+  background: #e2e8f0;
+  border: none;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.btnRefreshModal {
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  font-size: 16px;
+  cursor: pointer;
+  color: #475569;
+  transition: all 0.12s;
+}
+
+.btnRefreshModal:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.modalTableWrapper {
+  overflow-y: auto;
+  max-height: 55vh;
+  padding: 0 20px;
+}
+
+.twoColStudentsTable {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 14px;
+}
+
+.twoColStudentsTable th {
+  position: sticky;
+  top: 0;
+  background: #ffffff;
+  z-index: 2;
+  padding: 12px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1.5px solid #e2e8f0;
+}
+
+.twoColStudentsTable td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.twoColStudentsTable tbody tr:hover {
+  background-color: #f8fafc;
+}
+
+.studentNameWrapper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.studentAvatarDot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #e0e7ff;
+  color: #3730a3;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.studentFullName {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.btnDeleteStudentRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff1f2;
+  color: #e11d48;
+  border: 1px solid #fecdd3;
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btnDeleteStudentRow:hover {
+  background: #e11d48;
+  color: #ffffff;
+  border-color: #be123c;
+}
+
+.studentModalFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+}
+
+.modalFooterMeta {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.modalEmptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 36px 20px;
+  gap: 6px;
+  color: #64748b;
+}
+
+.modalEmptyState b {
+  color: #1e293b;
+  font-size: 14px;
+}
+
+/* 4. Add Student Form */
+.addStudentForm {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.formGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.formGroup label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.formGroup input {
+  padding: 10px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.formGroup input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.formHint {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.formErrorBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.addStudentActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.btnSaveStudent {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+  padding: 9px 18px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btnSaveStudent:hover {
+  background: #1d4ed8;
+}
+
+/* 5. Delete Confirm Modal */
+.deleteConfirmIcon {
+  font-size: 40px;
+  margin-bottom: 8px;
+}
+
+.deleteConfirmTitle {
+  margin: 0 0 8px;
+  font-size: 1.2rem;
+  color: #0f172a;
+}
+
+.deleteConfirmMessage {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #991b1b;
+}
+
+.deleteTargetBox {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+.targetRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.targetRow span {
+  color: #64748b;
+}
+
+.deleteConfirmSub {
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  color: #64748b;
+}
+
+.deleteConfirmActions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.btnConfirmDeleteStudent {
+  background: #dc2626;
+  color: #ffffff;
+  border: 1px solid #b91c1c;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btnConfirmDeleteStudent:hover {
+  background: #b91c1c;
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 640px) {
+  .registeredStudentsBar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .studentsBarActions {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+  }
+
+  .btnStudentsBarAction {
+    flex: 1;
+    justify-content: center;
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .studentModalCard {
+    max-height: 94vh;
+  }
+
+  .modalSearchRow {
+    padding: 10px 14px;
+  }
+
+  .modalTableWrapper {
+    padding: 0 14px;
+  }
+
+  .twoColStudentsTable th,
+  .twoColStudentsTable td {
+    padding: 10px 8px;
+    font-size: 13px;
+  }
+}
+

@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="com.emergencysos.responder">
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Essential Network Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -18,6 +17,11 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- Location Permissions for Student Emergency SOS GPS -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- Muted & Do Not Disturb Authorized Policy Permission -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
@@ -35,7 +39,7 @@
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="34">
 
-        <!-- Main Incident Dashboard Activity -->
+        <!-- Main Launcher Activity (Routes to StudentActivity or MainActivity based on role) -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true">
@@ -45,7 +49,13 @@
             </intent-filter>
         </activity>
 
-        <!-- Responder Authentication Activity -->
+        <!-- Student Portal Activity (Registration, Login & SOS Reporting) -->
+        <activity
+            android:name=".ui.StudentActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- Unified Authentication Activity -->
         <activity
             android:name=".ui.LoginActivity"
             android:exported="false"
@@ -76,11 +86,12 @@
             </intent-filter>
         </service>
 
-        <!-- Dedicated Emergency Siren & Alert Foreground Service -->
+        <!-- Dedicated Emergency Siren & Alert Foreground Service (Maintains persistent 24/7 background standby) -->
         <service
             android:name=".service.EmergencyAlertForegroundService"
             android:foregroundServiceType="specialUse"
-            android:exported="false">
+            android:exported="false"
+            android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Urgent campus road corridor emergency responder siren alarm and heads-up alert" />

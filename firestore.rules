@@ -9,9 +9,8 @@ service cloud.firestore {
 
     // Students collection: each student's document is keyed by their normalized registration ID
     match /students/{regdNo} {
-      // Allow fetching single student doc for login credential verification
-      allow get: if true;
-      allow list: if false; // Disallow exposing all student records
+      // Allow fetching student records for login credential verification and responder student directory
+      allow read: if true;
       
       // Allow new student registration only if:
       // 1. Document does not already exist (prevents duplicate registration)
@@ -22,8 +21,9 @@ service cloud.firestore {
                     && request.resource.data.role == 'STUDENT'
                     && !exists(/databases/$(database)/documents/students/$(regdNo));
                     
-      // Prevent tampering with registered student accounts
-      allow update, delete: if false;
+      // Allow emergency responders to delete student registrations
+      allow delete: if true;
+      allow update: if false;
     }
 
     // Emergency Responders collection: pre-authorized responder identities and device push tokens

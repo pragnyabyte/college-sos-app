@@ -16,4 +16,8 @@
     <color name="black">#000000</color>
     <color name="alarm_red">#B91C1C</color>
     <color name="alarm_pulse">#7F1D1D</color>
+    <color name="student_blue">#2563EB</color>
+    <color name="student_blue_light">#3B82F6</color>
+    <color name="student_blue_dark">#1D4ED8</color>
 </resources>
+

@@ -36,9 +36,17 @@ class IncidentAlertActivity : AppCompatActivity() {
         incidentId = intent.getStringExtra("incident_id") ?: "UNKNOWN-SOS"
         val category = intent.getStringExtra("category") ?: "Emergency"
         val priority = intent.getStringExtra("priority") ?: "CRITICAL"
-        val studentName = intent.getStringExtra("student_name") ?: "Student"
-        val studentId = intent.getStringExtra("student_id") ?: ""
-        val studentPhone = intent.getStringExtra("student_phone") ?: intent.getStringExtra("phone") ?: ""
+        var studentName = intent.getStringExtra("student_name")
+            ?: intent.getStringExtra("studentName")
+            ?: intent.getStringExtra("name")
+            ?: "Student"
+        var studentId = intent.getStringExtra("student_id")
+            ?: intent.getStringExtra("studentId")
+            ?: ""
+        var studentPhone = intent.getStringExtra("student_phone")
+            ?: intent.getStringExtra("studentPhone")
+            ?: intent.getStringExtra("phone")
+            ?: ""
         val location = intent.getStringExtra("location") ?: "Campus Location"
         val description = intent.getStringExtra("description") ?: "Emergency response requested."
         val latitude = intent.getDoubleExtra("latitude", Double.NaN).let { if (it.isNaN()) null else it }
@@ -49,9 +57,31 @@ class IncidentAlertActivity : AppCompatActivity() {
         binding.tvCategory.text = category
         binding.tvPriority.text = "$priority PRIORITY"
         binding.tvLocation.text = location
-        binding.tvStudent.text = if (studentId.isNotEmpty()) "$studentName ($studentId)" else studentName
-        binding.tvStudentPhone.text = if (studentPhone.isNotEmpty()) "📞 Phone: $studentPhone" else "Phone: Not provided"
         binding.tvDescription.text = description
+
+        updateStudentDisplay(studentName, studentId, studentPhone)
+
+        // Asynchronous resolution: If student name is generic ("Student") or student ID is blank,
+        // fetch the live incident from Firestore and resolve against the students collection.
+        if (incidentId.isNotBlank() && incidentId != "UNKNOWN-SOS") {
+            lifecycleScope.launch {
+                try {
+                    val firebaseRepo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@IncidentAlertActivity)
+                    val result = withContext(Dispatchers.IO) {
+                        firebaseRepo.getIncidentById(incidentId)
+                    }
+                    result.getOrNull()?.let { inc ->
+                        val resolvedName = inc.studentName ?: studentName
+                        val resolvedId = inc.studentId ?: studentId
+                        val resolvedPhone = inc.studentPhone ?: studentPhone
+                        updateStudentDisplay(resolvedName, resolvedId, resolvedPhone)
+                        setupActionButtons(resolvedPhone, inc.location?.latitude ?: latitude, inc.location?.longitude ?: longitude, location)
+                    }
+                } catch (e: Exception) {
+                    // Retain initial intent values
+                }
+            }
+        }
 
         // GPS Coordinates and accuracy presentation
         if (latitude != null && longitude != null) {
@@ -70,6 +100,14 @@ class IncidentAlertActivity : AppCompatActivity() {
         reportOpenReceipt()
 
         setupActionButtons(studentPhone, latitude, longitude, location)
+    }
+
+    private fun updateStudentDisplay(name: String, id: String, phone: String) {
+        val cleanName = name.ifBlank { "Student" }
+        binding.tvStudentName.text = cleanName
+        binding.tvStudentIdBadge.text = if (id.isNotBlank()) "ID: $id" else "ID: Registered"
+        binding.tvStudent.text = if (id.isNotBlank()) "$cleanName ($id)" else cleanName
+        binding.tvStudentPhone.text = if (phone.isNotBlank()) "📞 Phone: $phone" else "Phone: Not provided"
     }
 
     private fun configureLockScreenDisplay() {

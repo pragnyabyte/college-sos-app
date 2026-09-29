@@ -14,6 +14,19 @@ class EmergencySosApp : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
+            override fun onActivityStarted(activity: android.app.Activity) {
+                activeActivityCount++
+            }
+            override fun onActivityResumed(activity: android.app.Activity) {}
+            override fun onActivityPaused(activity: android.app.Activity) {}
+            override fun onActivityStopped(activity: android.app.Activity) {
+                activeActivityCount = maxOf(0, activeActivityCount - 1)
+            }
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        })
     }
 
     private fun createNotificationChannels() {
@@ -68,5 +81,10 @@ class EmergencySosApp : Application() {
     companion object {
         const val CHANNEL_EMERGENCY_ID = "emergency_sos_channel"
         const val CHANNEL_MONITOR_ID = "emergency_sos_monitor_channel"
+
+        private var activeActivityCount = 0
+
+        val isAppInForeground: Boolean
+            get() = activeActivityCount > 0
     }
 }

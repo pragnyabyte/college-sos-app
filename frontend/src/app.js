@@ -14,6 +14,10 @@ import {
   syncIncidentToFirestore,
   listenToFirestoreIncidents,
   listenToIncident,
+  fetchRegisteredStudentsFromFirestore,
+  listenToRegisteredStudents,
+  addStudentToFirestore,
+  deleteStudentFromFirestore,
   initFirebasePersistence,
   verifyAndRestoreSession,
   signOutFirebase,
@@ -153,6 +157,16 @@ const state = {
   users: [],
   categories: defaultCategories,
   incidents: [],
+  registeredStudents: [],
+  studentsLoading: false,
+  studentsError: null,
+  studentSearchQuery: '',
+  showViewStudentsModal: false,
+  showAddStudentModal: false,
+  deleteStudentConfirm: null,
+  addStudentError: '',
+  addStudentBusy: false,
+  deleteStudentBusy: false,
   view: 'home',
   selected: null,
   error: '',
@@ -497,6 +511,170 @@ function attachFirestoreListener() {
     });
   } catch (err) {
     console.warn('[SOS:Firestore] attachFirestoreListener failed:', err.message);
+  }
+}
+
+// Real-time Registered Students listener instance & refresh helpers
+let studentsUnsub = null;
+
+function attachRegisteredStudentsListener() {
+  if (studentsUnsub) return;
+  state.studentsLoading = true;
+  state.studentsError = null;
+  try {
+    studentsUnsub = listenToRegisteredStudents((studentsList) => {
+      state.registeredStudents = studentsList;
+      state.studentsLoading = false;
+      state.studentsError = null;
+      render();
+    }, (err) => {
+      console.warn('[SOS:Students] Listener error:', err.message);
+      state.studentsError = err.message || 'Unable to load registered students from Firebase.';
+      state.studentsLoading = false;
+      render();
+    });
+  } catch (err) {
+    console.warn('[SOS:Students] attachRegisteredStudentsListener error:', err.message);
+    state.studentsError = err.message || 'Failed to attach students listener.';
+    state.studentsLoading = false;
+    render();
+  }
+}
+
+async function refreshRegisteredStudents() {
+  state.studentsLoading = true;
+  state.studentsError = null;
+  render();
+  try {
+    const list = await fetchRegisteredStudentsFromFirestore();
+    state.registeredStudents = list;
+    state.studentsLoading = false;
+    state.studentsError = null;
+  } catch (err) {
+    console.warn('[SOS:Students] refreshRegisteredStudents error:', err.message);
+    state.studentsError = err.message || 'Failed to refresh registered students from Firebase.';
+    state.studentsLoading = false;
+  }
+  render();
+}
+
+async function handleAddStudentSubmit() {
+  const form = document.querySelector('#form-add-student');
+  const nameInput = form?.querySelector('#add-student-name-input');
+  const idInput = form?.querySelector('#add-student-id-input');
+
+  const name = String(nameInput?.value || '').trim();
+  const regdNo = String(idInput?.value || '').trim();
+
+  if (!name) {
+    state.addStudentError = 'Student Name is required.';
+    render();
+    document.querySelector('#add-student-name-input')?.focus();
+    return;
+  }
+  if (!regdNo) {
+    state.addStudentError = 'Student ID is required.';
+    render();
+    document.querySelector('#add-student-id-input')?.focus();
+    return;
+  }
+
+  state.addStudentBusy = true;
+  state.addStudentError = '';
+  render();
+
+  try {
+    const added = await addStudentToFirestore({ name, regdNo });
+    state.addStudentBusy = false;
+    state.showAddStudentModal = false;
+    state.showViewStudentsModal = true;
+    state.notice = `✅ Student "${added.name}" (${added.regdNo}) registered successfully!`;
+
+    // Optimistically update list if not yet caught by snapshot
+    if (!state.registeredStudents.some(s => s.regdNo === added.regdNo)) {
+      state.registeredStudents.unshift({
+        id: added.regdNo,
+        regdNo: added.regdNo,
+        name: added.name,
+        createdAt: added.createdAt,
+        status: 'active',
+        role: 'STUDENT'
+      });
+    }
+
+    render();
+  } catch (err) {
+    state.addStudentBusy = false;
+    state.addStudentError = err.message || 'Failed to save student to Firebase.';
+    render();
+  }
+}
+
+async function handleDeleteStudentConfirm(regdNo) {
+  if (!regdNo) return;
+  state.deleteStudentBusy = true;
+  render();
+
+  try {
+    await deleteStudentFromFirestore(regdNo);
+    state.deleteStudentBusy = false;
+    state.deleteStudentConfirm = null;
+    // Remove student from displayed list immediately
+    state.registeredStudents = state.registeredStudents.filter(s => s.regdNo !== regdNo);
+    state.notice = `✅ Student ID "${regdNo}" successfully deleted.`;
+    render();
+  } catch (err) {
+    state.deleteStudentBusy = false;
+    state.notice = `❌ Failed to delete student: ${err.message}`;
+    render();
+  }
+}
+
+function filterStudentRows(query) {
+  const tbody = document.querySelector('#registered-students-tbody');
+  const countMeta = document.querySelector('.modalFooterMeta');
+  const tableWrapper = document.querySelector('.modalTableWrapper');
+
+  if (!tbody) {
+    return;
+  }
+
+  const rows = tbody.querySelectorAll('.studentRow');
+  let visibleCount = 0;
+
+  rows.forEach((row) => {
+    const searchData = row.dataset.search || '';
+    const match = !query || searchData.includes(query);
+    row.style.display = match ? '' : 'none';
+    if (match) visibleCount++;
+  });
+
+  const total = state.registeredStudents?.length || 0;
+  if (countMeta) {
+    countMeta.textContent = query
+      ? `Showing ${visibleCount} of ${total} students`
+      : `Total: ${total} registered students`;
+  }
+
+  let noMatchDiv = document.querySelector('#modal-no-matches');
+  if (visibleCount === 0 && query) {
+    if (!noMatchDiv) {
+      noMatchDiv = document.createElement('div');
+      noMatchDiv.id = 'modal-no-matches';
+      noMatchDiv.className = 'modalEmptyState';
+      noMatchDiv.innerHTML = `
+        <span style="font-size:28px">🔍</span>
+        <b>No matching students found</b>
+        <p>No registered students match "<strong class="noMatchQuery"></strong>".</p>
+        <button type="button" class="btnClearFilterBtn" data-action="clear-student-search">Clear Search</button>
+      `;
+      tableWrapper?.appendChild(noMatchDiv);
+    }
+    noMatchDiv.style.display = 'flex';
+    const strongEl = noMatchDiv.querySelector('.noMatchQuery');
+    if (strongEl) strongEl.textContent = query;
+  } else {
+    if (noMatchDiv) noMatchDiv.style.display = 'none';
   }
 }
 
@@ -932,7 +1110,11 @@ function shell(content) {
           <span class="alarmIcon">🚨</span>
           <div class="alarmDetails">
             <h3>EMERGENCY SOS ALERT: ${esc(state.activeAlarm.id)}</h3>
-            <p>${esc(state.activeAlarm.student_name || state.activeAlarm.studentName || 'Student')} reported ${esc(category(state.activeAlarm.category_id || state.activeAlarm.categoryId)?.name || 'Emergency')} at ${esc(state.activeAlarm.location?.building || state.activeAlarm.building || 'Campus')}</p>
+            <div class="alarmStudentLine">
+              <span class="alarmStudentName">🎓 <strong>${esc(state.activeAlarm.student_name || state.activeAlarm.studentName || 'Student')}</strong></span>
+              <span class="alarmStudentIdBadge">ID: <strong>${esc(state.activeAlarm.student_id || state.activeAlarm.studentId || 'N/A')}</strong></span>
+            </div>
+            <p>${esc(category(state.activeAlarm.category_id || state.activeAlarm.categoryId)?.name || 'Emergency')} at ${esc(state.activeAlarm.location?.building || state.activeAlarm.building || 'Campus')}</p>
           </div>
         </div>
         <div class="alarmActions">
@@ -1548,6 +1730,220 @@ function history() {
   return `<section class="pageTitle"><p class="eyebrow">STUDENT DASHBOARD</p><h1>My SOS history</h1><p>Only you and authorized emergency staff can access these records.</p></section><section class="panel list">${myIncidents.length ? myIncidents.map(i => { const c = category(i.category_id); return `<button data-incident="${i.id}"><span class="catIcon small">${c?.icon || 'SOS'}</span><span><b>${esc(c?.name || 'Emergency')}</b><small>${i.id} · Reported: ${formatReportedTime(getIncidentCreatedAt(i))}</small></span>${status(i.status)}<i>›</i></button>`; }).join('') : '<div class="empty">No incidents found.</div>'}</section>`;
 }
 
+function renderRegisteredStudentsBar() {
+  const totalCount = state.registeredStudents?.length || 0;
+  return `
+    <section class="registeredStudentsBar" id="registered-students-bar" aria-label="Registered Students Overview">
+      <div class="studentsBarLeft">
+        <span class="studentsBarIcon" aria-hidden="true">👥</span>
+        <span class="studentsBarLabel">Registered Students:</span>
+        <span class="studentsBarCount" id="total-registered-students-count">${totalCount}</span>
+      </div>
+      <div class="studentsBarActions">
+        <button type="button" class="btnStudentsBarAction btnViewStudents" data-action="open-view-students" title="View all registered students">
+          👥 View Students
+        </button>
+        <button type="button" class="btnStudentsBarAction btnAddStudent" data-action="open-add-student" title="Add a new student">
+          ➕ Add Student
+        </button>
+      </div>
+    </section>
+  `;
+}
+
+function renderViewStudentsModal() {
+  const allStudents = state.registeredStudents || [];
+  const totalCount = allStudents.length;
+  const query = (state.studentSearchQuery || '').trim().toLowerCase();
+
+  const filteredStudents = query
+    ? allStudents.filter(s =>
+        String(s.regdNo || '').toLowerCase().includes(query) ||
+        String(s.name || '').toLowerCase().includes(query)
+      )
+    : allStudents;
+
+  return `
+    <div class="studentModalOverlay" id="view-students-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="viewStudentsModalTitle">
+      <div class="studentModalCard viewStudentsCard">
+        <div class="studentModalHeader">
+          <div class="modalHeaderTitle">
+            <h3 id="viewStudentsModalTitle">Registered Students</h3>
+            <span class="modalCountBadge" id="modal-registered-count">${totalCount} Total</span>
+          </div>
+          <div class="modalHeaderRight">
+            <button type="button" class="btnModalHeaderAdd" data-action="open-add-student">➕ Add Student</button>
+            <button type="button" class="btnCloseModal" data-action="close-view-students" aria-label="Close dialog">✕</button>
+          </div>
+        </div>
+
+        <div class="modalSearchRow">
+          <div class="modalSearchBox">
+            <span class="searchIcon" aria-hidden="true">⌕</span>
+            <input
+              type="search"
+              id="student-search-input"
+              class="studentSearchInput"
+              placeholder="Search by student name or ID…"
+              value="${esc(state.studentSearchQuery || '')}"
+              autocomplete="off"
+              spellcheck="false"
+              aria-label="Search registered students by name or ID"
+            >
+            ${state.studentSearchQuery ? `
+              <button type="button" class="btnClearStudentSearch" data-action="clear-student-search" aria-label="Clear search">×</button>
+            ` : ''}
+          </div>
+          <button type="button" class="btnRefreshModal" data-action="refresh-students" title="Refresh students from Firebase">
+            <span class="refreshIcon ${state.studentsLoading ? 'spinning' : ''}">↻</span>
+          </button>
+        </div>
+
+        <div class="modalTableWrapper">
+          ${filteredStudents.length === 0 ? `
+            <div class="modalEmptyState">
+              <span style="font-size:28px">🔍</span>
+              <b>No matching students found</b>
+              <p>${query ? `No student records match "${esc(query)}"` : 'No registered students found in Firebase database.'}</p>
+              ${query ? `<button type="button" class="btnClearFilterBtn" data-action="clear-student-search">Clear Search</button>` : ''}
+            </div>
+          ` : `
+            <table class="twoColStudentsTable" aria-label="Registered Students Directory">
+              <thead>
+                <tr>
+                  <th scope="col" class="thStudentName">Student Name</th>
+                  <th scope="col" class="thStudentId">Student ID</th>
+                  <th scope="col" class="thStudentAction" style="text-align:right">Action</th>
+                </tr>
+              </thead>
+              <tbody id="registered-students-tbody">
+                ${filteredStudents.map(s => `
+                  <tr class="studentRow" data-search="${esc((s.regdNo + ' ' + s.name).toLowerCase())}">
+                    <td class="tdStudentName">
+                      <div class="studentNameWrapper">
+                        <span class="studentAvatarDot">${esc((s.name || 'S').charAt(0).toUpperCase())}</span>
+                        <span class="studentFullName">${esc(s.name)}</span>
+                      </div>
+                    </td>
+                    <td class="tdStudentId">
+                      <span class="badgeStudentId">${esc(s.regdNo)}</span>
+                    </td>
+                    <td class="tdStudentAction" style="text-align:right">
+                      <button
+                        type="button"
+                        class="btnDeleteStudentRow"
+                        data-action="delete-student"
+                        data-regd="${esc(s.regdNo)}"
+                        data-name="${esc(s.name)}"
+                        title="Delete student ${esc(s.regdNo)}"
+                      >
+                        🗑 Delete
+                      </button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `}
+        </div>
+
+        <div class="studentModalFooter">
+          <small class="modalFooterMeta">
+            ${query ? `Showing ${filteredStudents.length} of ${totalCount} students` : `Total: ${totalCount} registered students`}
+          </small>
+          <button type="button" class="secondary" data-action="close-view-students">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAddStudentModal() {
+  return `
+    <div class="studentModalOverlay" id="add-student-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="addStudentModalTitle">
+      <div class="studentModalCard addStudentCard">
+        <div class="studentModalHeader">
+          <div class="modalHeaderTitle">
+            <h3 id="addStudentModalTitle">➕ Add Registered Student</h3>
+            <p class="modalHeaderSub">Add a verified student into the Firebase registration database.</p>
+          </div>
+          <button type="button" class="btnCloseModal" data-action="close-add-student" aria-label="Close dialog">✕</button>
+        </div>
+
+        <form id="form-add-student" class="addStudentForm" novalidate>
+          ${state.addStudentError ? `
+            <div class="formErrorBanner" role="alert">
+              <span>⚠️</span>
+              <span>${esc(state.addStudentError)}</span>
+            </div>
+          ` : ''}
+
+          <div class="formGroup">
+            <label for="add-student-name-input">Student Name <span class="reqTag">*</span></label>
+            <input
+              type="text"
+              id="add-student-name-input"
+              name="name"
+              placeholder="Enter student full name (e.g. Rahul Sharma)"
+              required
+              autocomplete="off"
+            >
+          </div>
+
+          <div class="formGroup">
+            <label for="add-student-id-input">Student ID <span class="reqTag">*</span></label>
+            <input
+              type="text"
+              id="add-student-id-input"
+              name="regdNo"
+              placeholder="Enter unique student ID / Regd No. (e.g. 2024CS010)"
+              required
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+            >
+            <small class="formHint">Unique identifier used for authentication and emergency SOS verification.</small>
+          </div>
+
+          <div class="addStudentActions">
+            <button type="button" class="secondary" data-action="close-add-student" ${state.addStudentBusy ? 'disabled' : ''}>Cancel</button>
+            <button type="submit" class="primary btnSaveStudent" id="btn-save-student" ${state.addStudentBusy ? 'disabled' : ''}>
+              ${state.addStudentBusy ? 'Saving…' : 'Save Student'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderDeleteConfirmModal() {
+  const stu = state.deleteStudentConfirm;
+  if (!stu) return '';
+
+  return `
+    <div class="studentModalOverlay" id="delete-confirm-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="deleteConfirmTitle">
+      <div class="studentModalCard deleteConfirmCard">
+        <div class="deleteConfirmIcon">⚠️</div>
+        <h3 id="deleteConfirmTitle">Confirm Student Deletion</h3>
+        <p class="deleteConfirmMessage">
+          Are you sure you want to delete this registered student?
+        </p>
+        <div class="deleteTargetBox">
+          <div class="targetRow"><span>Student Name:</span> <strong>${esc(stu.name)}</strong></div>
+          <div class="targetRow"><span>Student ID:</span> <span class="badgeStudentId">${esc(stu.regdNo)}</span></div>
+        </div>
+        <div class="deleteConfirmActions">
+          <button type="button" class="secondary" data-action="cancel-delete-student" ${state.deleteStudentBusy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="danger btnConfirmDeleteStudent" data-action="confirm-delete-student" data-regd="${esc(stu.regdNo)}" ${state.deleteStudentBusy ? 'disabled' : ''}>
+            ${state.deleteStudentBusy ? 'Deleting…' : 'Delete Student'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function board() {
   const isResp = isResponderUser(state.user);
   const audioState = getAudioState();
@@ -1575,7 +1971,7 @@ function board() {
         <span class="overdueIcon">🚨</span>
         <div>
           <b>⚠️ ${unacknowledged.length} PENDING / OVERDUE EMERGENCY ALERT(S)</b>
-          <small>Incident ${esc(unacknowledged[0].id)} reported at ${esc(unacknowledged[0].location?.building || 'Campus')} requires immediate response team attention.</small>
+          <small>Incident ${esc(unacknowledged[0].id)} from <strong>${esc(unacknowledged[0].student_name || unacknowledged[0].studentName || 'Student')} (ID: ${esc(unacknowledged[0].student_id || unacknowledged[0].studentId || 'N/A')})</strong> at ${esc(unacknowledged[0].location?.building || 'Campus')} requires immediate response team attention.</small>
         </div>
       </div>
       <button class="btnAckOverdue" data-incident="${esc(unacknowledged[0].id)}">Open ${esc(unacknowledged[0].id)} →</button>
@@ -1618,6 +2014,9 @@ function board() {
       </div>
       <button class="secondary" data-action="refresh">↻ Refresh</button>
     </section>
+
+    <!-- COMPACT REGISTERED STUDENTS BAR (Emergency Responders Only) -->
+    ${isResp ? renderRegisteredStudentsBar() : ''}
 
     <section class="toolbar">
       <label class="search">⌕<input id="search" aria-label="Search incidents" placeholder="Search SOS ID or student"></label>
@@ -1665,7 +2064,7 @@ function cards(items) {
       <h3>${esc(i.emergency_type || i.emergencyType || c?.name || 'Emergency')}</h3>
       <dl>
         <div><dt>Reported</dt><dd class="reportedMeta">${esc(reportedTime)}</dd></div>
-        <div><dt>Student</dt><dd>${esc(i.student_name)} · ${esc(i.student_id)}</dd></div>
+        <div><dt>Student</dt><dd><b>${esc(i.student_name || i.studentName || 'Student')}</b> · ID: <b class="badgeStudentIdSmall">${esc(i.student_id || i.studentId || 'N/A')}</b></dd></div>
         <div><dt>Location</dt><dd>${locSnippet}</dd></div>
         <div><dt>Department</dt><dd>${labels[i.primary_department_id] || 'Emergency Unit'}</dd></div>
       </dl>
@@ -1705,6 +2104,10 @@ function details(i) {
   const ageSec = lastUpdated ? Math.max(0, Math.round((Date.now() - new Date(lastUpdated).getTime()) / 1000)) : Infinity;
   const isLiveFresh = hasGps && ageSec <= 60;
 
+  const studentName = String(i.student_name || i.studentName || i.userName || 'Student').trim();
+  const studentId = String(i.student_id || i.studentId || i.userId || 'N/A').trim();
+  const studentPhone = String(i.student_phone || i.studentPhone || i.phone || '').trim();
+
   return `<section class="details">
     <button class="back" data-action="close-details">← Back</button>
     <div class="detailsTop">
@@ -1718,6 +2121,23 @@ function details(i) {
         ${responder ? `<button type="button" class="btnDeleteDetails" data-delete-sos="${esc(i.id)}" data-delete-mongoid="${esc(i._id || '')}" title="Permanently delete this SOS alert">🗑 Delete</button>` : ''}
       </div>
     </div>
+
+    <!-- Dedicated Mobile-Friendly Prominent Student Identity Card -->
+    <div class="studentIdentityCard" role="region" aria-label="Student Identity Card">
+      <div class="studentIdentityAvatar" aria-hidden="true">🎓</div>
+      <div class="studentIdentityInfo">
+        <div class="studentIdentityHeader">
+          <span class="studentIdentityLabel">REPORTING STUDENT IDENTITY</span>
+          <span class="verifiedStudentBadge">✓ Verified Student</span>
+        </div>
+        <div class="studentIdentityName" id="detail-student-name">${esc(studentName)}</div>
+        <div class="studentIdentityMeta">
+          <span class="studentIdBadge">REG / ID: <strong id="detail-student-id">${esc(studentId)}</strong></span>
+          ${studentPhone ? `<a href="tel:${esc(studentPhone)}" class="studentPhoneBadge">📞 <span>${esc(studentPhone)}</span></a>` : '<span class="studentPhoneBadge missing">📞 Phone: Not provided</span>'}
+        </div>
+      </div>
+    </div>
+
     ${i.status === 'QUEUED_OFFLINE' ? `
       <div class="panel" style="background:#fffbeb;border:2px solid #f59e0b;padding:16px;margin-bottom:16px;border-radius:12px;">
         <h3 style="color:#b45309;margin-top:0;display:flex;align-items:center;gap:8px;">⚠️ Queued Offline on Device</h3>
@@ -1729,8 +2149,9 @@ function details(i) {
       <article class="panel">
         <h2>Emergency information</h2>
         <dl class="facts">
-          <div><dt>Student name</dt><dd>${esc(i.student_name)}</dd></div>
-          <div><dt>Student ID</dt><dd>${esc(i.student_id)}</dd></div>
+          <div><dt>Student name</dt><dd><b>${esc(studentName)}</b></dd></div>
+          <div><dt>Student ID</dt><dd><b class="badgeStudentId">${esc(studentId)}</b></dd></div>
+          ${studentPhone ? `<div><dt>Phone number</dt><dd><a href="tel:${esc(studentPhone)}">${esc(studentPhone)}</a></dd></div>` : ''}
           <div><dt>Reported</dt><dd class="reportedMeta">${esc(reportedTime)}</dd></div>
           <div><dt>Emergency type</dt><dd>${esc(i.emergency_type || i.emergencyType || c?.name || 'General Emergency')}</dd></div>
           ${i.source ? `<div><dt>Source</dt><dd>${esc(i.source)}</dd></div>` : ''}
@@ -1939,7 +2360,11 @@ function render() {
     }
   }
 
-  app.innerHTML = shell(content) + (state.showExitPrompt ? renderExitPromptModal() : '');
+  app.innerHTML = shell(content) +
+    (state.showExitPrompt ? renderExitPromptModal() : '') +
+    (state.showViewStudentsModal ? renderViewStudentsModal() : '') +
+    (state.showAddStudentModal ? renderAddStudentModal() : '') +
+    (state.deleteStudentConfirm ? renderDeleteConfirmModal() : '');
   if (state.view === 'analytics' && !state.selected) loadStats();
 }
 
@@ -2082,6 +2507,7 @@ async function handleLogin(formEl) {
       initAudio();
       initResponderPush();
       attachFirestoreListener();
+      attachRegisteredStudentsListener();
       checkIncidentQueryParam();
     }
 
@@ -3175,10 +3601,14 @@ document.addEventListener('click', async (e) => {
       try { firestoreUnsub(); } catch {}
       firestoreUnsub = null;
     }
+    if (studentsUnsub) {
+      try { studentsUnsub(); } catch {}
+      studentsUnsub = null;
+    }
     stopEmergencyAlarm();
     try { await signOutFirebase(); } catch {}
     safeStorage.clearSession();
-    Object.assign(state, { user: null, token: '', incidents: [], selected: null, notice: null, socket: null, activeAlarm: null });
+    Object.assign(state, { user: null, token: '', incidents: [], registeredStudents: [], studentsLoading: false, studentsError: null, studentSearchQuery: '', selected: null, notice: null, socket: null, activeAlarm: null });
     render();
   }
 
@@ -3218,6 +3648,64 @@ document.addEventListener('click', async (e) => {
     render();
   }
   if (a === 'refresh') refresh();
+  if (a === 'refresh-students') {
+    refreshRegisteredStudents();
+  }
+  if (a === 'clear-student-search') {
+    state.studentSearchQuery = '';
+    const input = document.querySelector('#student-search-input');
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
+    filterStudentRows('');
+  }
+  if (a === 'open-view-students') {
+    state.showViewStudentsModal = true;
+    state.studentSearchQuery = '';
+    render();
+    return;
+  }
+  if (a === 'close-view-students') {
+    state.showViewStudentsModal = false;
+    state.studentSearchQuery = '';
+    render();
+    return;
+  }
+  if (a === 'open-add-student') {
+    state.showAddStudentModal = true;
+    state.addStudentError = '';
+    render();
+    return;
+  }
+  if (a === 'close-add-student') {
+    state.showAddStudentModal = false;
+    state.addStudentError = '';
+    render();
+    return;
+  }
+  if (a === 'save-student' || el.id === 'btn-save-student') {
+    e.preventDefault();
+    handleAddStudentSubmit();
+    return;
+  }
+  if (a === 'delete-student') {
+    const regdNo = el.dataset.regd;
+    const name = el.dataset.name;
+    state.deleteStudentConfirm = { regdNo, name };
+    render();
+    return;
+  }
+  if (a === 'cancel-delete-student') {
+    state.deleteStudentConfirm = null;
+    render();
+    return;
+  }
+  if (a === 'confirm-delete-student') {
+    const regdNo = el.dataset.regd || state.deleteStudentConfirm?.regdNo;
+    handleDeleteStudentConfirm(regdNo);
+    return;
+  }
 
   // Exit Confirmation Modal button handlers (Android Back Button Protection)
   if (el.id === 'btn-stay-on-site' || el.closest('#btn-stay-on-site')) {
@@ -3361,6 +3849,14 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// Form submit delegation
+app.addEventListener('submit', (e) => {
+  if (e.target.id === 'form-add-student') {
+    e.preventDefault();
+    handleAddStudentSubmit();
+  }
+});
+
 // Search and form input delegation
 app.addEventListener('input', (e) => {
   if (['building', 'floor', 'room'].includes(e.target.name)) {
@@ -3376,6 +3872,11 @@ app.addEventListener('input', (e) => {
   if (e.target.id === 'search' || e.target.id === 'status-filter') {
     const q = document.querySelector('#search')?.value.toLowerCase() || '', s = document.querySelector('#status-filter')?.value || '';
     document.querySelectorAll('.incident').forEach(x => x.hidden = !(x.dataset.search.includes(q) && (!s || x.dataset.status === s)));
+  }
+  if (e.target.id === 'student-search-input') {
+    const q = (e.target.value || '').trim().toLowerCase();
+    state.studentSearchQuery = e.target.value;
+    filterStudentRows(q);
   }
 });
 
@@ -3430,6 +3931,7 @@ async function initAppSession() {
           initAudio();
           initResponderPush();
           attachFirestoreListener();
+          attachRegisteredStudentsListener();
           checkIncidentQueryParam();
         }
 

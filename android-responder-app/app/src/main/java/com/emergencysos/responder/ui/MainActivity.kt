@@ -2,6 +2,7 @@ package com.emergencysos.responder.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -31,6 +32,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.emergencysos.responder.service.EmergencyAlertForegroundService
+import com.google.firebase.messaging.FirebaseMessaging
 
 class MainActivity : AppCompatActivity() {
 
@@ -53,6 +55,12 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        if (prefs.userRole == "STUDENT") {
+            startActivity(Intent(this, StudentActivity::class.java))
+            finish()
+            return
+        }
+
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -62,6 +70,7 @@ class MainActivity : AppCompatActivity() {
         registerNetworkMonitoring()
         loadIncidents()
         sendDevicePing()
+        syncDeviceFcmToken()
         handleIncomingIncidentIntent(intent)
     }
 
@@ -118,6 +127,10 @@ class MainActivity : AppCompatActivity() {
                     if (newlyAdded != null && !prefs.isIncidentAlerted(newlyAdded.id)) {
                         prefs.markIncidentAlerted(newlyAdded.id)
                         alertedIncidentIds.add(newlyAdded.id)
+                        if (!isRecent(newlyAdded.createdAt)) {
+                            Log.d(TAG, "Skipping siren for older incident ${newlyAdded.id} created at ${newlyAdded.createdAt}")
+                            return@listenToIncidents
+                        }
                         val locStr = "${newlyAdded.location?.building ?: ""} · ${newlyAdded.location?.floor ?: ""} · ${newlyAdded.location?.room ?: ""}".trim()
                         EmergencyAlertForegroundService.startEmergencyAlert(
                             context = this@MainActivity,
@@ -316,28 +329,15 @@ class MainActivity : AppCompatActivity() {
                     if (unacknowledged.isNotEmpty()) {
                         binding.bannerOverdueAlert.visibility = View.VISIBLE
                         binding.tvOverdueAlertText.text = "⚠️ ${unacknowledged.size} OVERDUE EMERGENCY AWAITING RESPONSE"
-                        binding.tvOverdueAlertSubtext.text = "Incident ${unacknowledged.first().id} at ${unacknowledged.first().location?.building ?: "Campus"} (Reported: ${unacknowledged.first().createdAt ?: "Recently"})"
+                        val firstUnack = unacknowledged.first()
+                        val stuInfo = "${firstUnack.studentName ?: "Student"} (${firstUnack.studentId ?: "N/A"})"
+                        binding.tvOverdueAlertSubtext.text = "Incident ${firstUnack.id} from $stuInfo at ${firstUnack.location?.building ?: "Campus"}"
 
-                        for (inc in unacknowledged) {
+                        // Mark existing incidents as known so they never trigger a stale siren
+                        for (inc in activeList) {
                             if (!prefs.isIncidentAlerted(inc.id)) {
                                 prefs.markIncidentAlerted(inc.id)
                                 alertedIncidentIds.add(inc.id)
-                                val locStr = "${inc.location?.building ?: ""} · ${inc.location?.floor ?: ""} · ${inc.location?.room ?: ""}".trim()
-                                EmergencyAlertForegroundService.startEmergencyAlert(
-                                    context = this@MainActivity,
-                                    incidentId = inc.id,
-                                    category = inc.categoryId ?: "Emergency",
-                                    priority = inc.priority,
-                                    studentName = inc.studentName ?: "Student",
-                                    studentId = inc.studentId ?: "",
-                                    location = locStr.ifEmpty { "Campus" },
-                                    description = inc.description ?: "",
-                                    studentPhone = inc.studentPhone ?: "",
-                                    latitude = inc.location?.latitude,
-                                    longitude = inc.location?.longitude,
-                                    accuracy = inc.location?.accuracy
-                                )
-                                break
                             }
                         }
                     } else {
@@ -395,8 +395,11 @@ class MainActivity : AppCompatActivity() {
             putExtra("category", incident.categoryId)
             putExtra("priority", incident.priority)
             putExtra("student_name", incident.studentName)
+            putExtra("studentName", incident.studentName)
             putExtra("student_id", incident.studentId)
+            putExtra("studentId", incident.studentId)
             putExtra("student_phone", incident.studentPhone ?: "")
+            putExtra("studentPhone", incident.studentPhone ?: "")
             putExtra("location", "${incident.location?.building ?: ""} · ${incident.location?.floor ?: ""} · ${incident.location?.room ?: ""}")
             putExtra("description", incident.description)
             incident.location?.latitude?.let { putExtra("latitude", it) }
@@ -442,6 +445,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun syncDeviceFcmToken() {
+        try {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful && !task.result.isNullOrBlank()) {
+                    val token = task.result
+                    prefs.fcmToken = token
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        try {
+                            val repo = com.emergencysos.responder.data.FirebaseRepository.getInstance(this@MainActivity)
+                            repo.registerDeviceToken(token, prefs.responderId)
+                            withContext(Dispatchers.Main) {
+                                updateDeviceDiagnostics()
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun confirmLogout() {
         AlertDialog.Builder(this)
             .setTitle("Confirm Logout")
@@ -468,5 +491,26 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this@MainActivity, LoginActivity::class.java))
             finish()
         }
+    }
+
+    private fun isRecent(createdAtStr: String?): Boolean {
+        if (createdAtStr.isNullOrBlank()) return true
+        return try {
+            val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            format.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            val cleanStr = createdAtStr.substringBefore('.').substringBefore('Z')
+            val date = format.parse(cleanStr)
+            if (date != null) {
+                val ageMs = System.currentTimeMillis() - date.time
+                // Consider recent if created within past 30 minutes (or future clock skew up to 5 min)
+                ageMs in -300_000L..1_800_000L
+            } else true
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }

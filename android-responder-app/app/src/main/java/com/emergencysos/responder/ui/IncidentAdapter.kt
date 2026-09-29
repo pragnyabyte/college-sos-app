@@ -14,6 +14,9 @@ class IncidentAdapter(
 
     private val items = mutableListOf<Incident>()
 
+    val currentList: List<Incident>
+        get() = items.toList()
+
     fun submitList(newItems: List<Incident>) {
         items.clear()
         items.addAll(newItems)
@@ -40,8 +43,12 @@ class IncidentAdapter(
             binding.tvIncidentPriority.text = incident.priority.uppercase()
 
             val loc = incident.location
-            binding.tvIncidentLocation.text = "⌖ ${loc?.building ?: "Campus"} · ${loc?.floor ?: ""} · ${loc?.room ?: ""}".trim()
-            binding.tvIncidentStudent.text = "${incident.studentName ?: "Student"} (${incident.studentId ?: ""})"
+            val studentDisplay = if (!incident.studentId.isNullOrBlank()) {
+                "🎓 ${incident.studentName ?: "Student"}  ·  ID: ${incident.studentId}"
+            } else {
+                "🎓 ${incident.studentName ?: "Student"}"
+            }
+            binding.tvIncidentStudent.text = studentDisplay
 
             // Format status badge
             val statusText = "● " + incident.status.replace("_", " ").lowercase().replaceFirstChar { it.uppercase() }

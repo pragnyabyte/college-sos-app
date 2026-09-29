@@ -1,5 +1,6 @@
 package com.emergencysos.responder.service
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -12,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.emergencysos.responder.EmergencySosApp
@@ -33,6 +35,16 @@ class EmergencyAlertForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private val handler = Handler(Looper.getMainLooper())
     private var currentIncidentId: String = ""
+    private var lastCategory: String = "Emergency"
+    private var lastPriority: String = "CRITICAL"
+    private var lastStudentName: String = "Student"
+    private var lastStudentId: String = ""
+    private var lastLocation: String = "Campus"
+    private var lastDescription: String = ""
+    private var lastStudentPhone: String = ""
+    private var lastLatitude: Double? = null
+    private var lastLongitude: Double? = null
+    private var lastAccuracy: Double? = null
     private var firestoreListener: ListenerRegistration? = null
     private var isAlarmActive: Boolean = false
 
@@ -56,6 +68,9 @@ class EmergencyAlertForegroundService : Service() {
             }
             ACTION_START_ALERT -> {
                 handleStartAlert(intent)
+            }
+            ACTION_UPDATE_LOCATION -> {
+                handleUpdateLocation(intent)
             }
             ACTION_STOP_ALARM -> {
                 handleStopAlarm()
@@ -92,6 +107,10 @@ class EmergencyAlertForegroundService : Service() {
                         if (newlyAdded != null && !prefs.isIncidentAlerted(newlyAdded.id)) {
                             prefs.markIncidentAlerted(newlyAdded.id)
                             alertedIncidentIds.add(newlyAdded.id)
+                            if (!isRecent(newlyAdded.createdAt)) {
+                                Log.d(TAG, "Skipping siren in monitor service for older incident ${newlyAdded.id} created at ${newlyAdded.createdAt}")
+                                return@listenToIncidents
+                            }
                             val locStr = listOf(
                                 newlyAdded.location?.building,
                                 newlyAdded.location?.floor,
@@ -198,6 +217,16 @@ class EmergencyAlertForegroundService : Service() {
         accuracy: Double? = null
     ) {
         currentIncidentId = incidentId
+        lastCategory = category
+        lastPriority = priority
+        lastStudentName = studentName
+        lastStudentId = studentId
+        lastLocation = location
+        lastDescription = description
+        lastStudentPhone = studentPhone
+        lastLatitude = latitude
+        lastLongitude = longitude
+        lastAccuracy = accuracy
         isAlarmActive = true
 
         Log.d(TAG, "Triggering emergency alarm for $incidentId ($priority) at $location")
@@ -221,15 +250,113 @@ class EmergencyAlertForegroundService : Service() {
             }
         }
 
-        // 4. Build FullScreenIntent & Notification Actions
+        // 4. Build and display notification with full-screen intent
+        val notification = buildEmergencyNotification(
+            incidentId = incidentId,
+            category = category,
+            priority = priority,
+            studentName = studentName,
+            studentId = studentId,
+            location = location,
+            description = description,
+            studentPhone = studentPhone,
+            latitude = latitude,
+            longitude = longitude,
+            accuracy = accuracy
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        // Try direct launch if in background
+        try {
+            val alertIntent = Intent(applicationContext, IncidentAlertActivity::class.java).apply {
+                this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("incident_id", incidentId)
+                putExtra("category", category)
+                putExtra("priority", priority)
+                putExtra("student_name", studentName)
+                putExtra("studentName", studentName)
+                putExtra("student_id", studentId)
+                putExtra("studentId", studentId)
+                putExtra("student_phone", studentPhone)
+                putExtra("studentPhone", studentPhone)
+                putExtra("location", location)
+                putExtra("description", description)
+                if (latitude != null) putExtra("latitude", latitude)
+                if (longitude != null) putExtra("longitude", longitude)
+                if (accuracy != null) putExtra("accuracy", accuracy)
+            }
+            startActivity(alertIntent)
+        } catch (e: Exception) {
+            Log.d(TAG, "Direct activity launch notice (handled by full-screen intent): ${e.message}")
+        }
+    }
+
+    private fun handleUpdateLocation(intent: Intent?) {
+        val incidentId = intent?.getStringExtra(EXTRA_INCIDENT_ID) ?: currentIncidentId
+        if (incidentId.isBlank() || (currentIncidentId.isNotBlank() && incidentId != currentIncidentId)) {
+            Log.d(TAG, "Location update for non-current incident ($incidentId vs $currentIncidentId), skipping.")
+            return
+        }
+
+        val location = intent?.getStringExtra(EXTRA_LOCATION) ?: lastLocation
+        val latitude = intent?.getDoubleExtra(EXTRA_LATITUDE, Double.NaN).let { if (it?.isNaN() == true) null else it } ?: lastLatitude
+        val longitude = intent?.getDoubleExtra(EXTRA_LONGITUDE, Double.NaN).let { if (it?.isNaN() == true) null else it } ?: lastLongitude
+        val accuracy = intent?.getDoubleExtra(EXTRA_ACCURACY, Double.NaN).let { if (it?.isNaN() == true) null else it } ?: lastAccuracy
+
+        lastLocation = location
+        lastLatitude = latitude
+        lastLongitude = longitude
+        lastAccuracy = accuracy
+
+        Log.d(TAG, "Updating existing notification location for $incidentId: $location (lat=$latitude, lng=$longitude)")
+
+        val notification = buildEmergencyNotification(
+            incidentId = incidentId,
+            category = lastCategory,
+            priority = lastPriority,
+            studentName = lastStudentName,
+            studentId = lastStudentId,
+            location = location,
+            description = lastDescription,
+            studentPhone = lastStudentPhone,
+            latitude = latitude,
+            longitude = longitude,
+            accuracy = accuracy
+        )
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        nm?.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun buildEmergencyNotification(
+        incidentId: String,
+        category: String,
+        priority: String,
+        studentName: String,
+        studentId: String,
+        location: String,
+        description: String,
+        studentPhone: String = "",
+        latitude: Double? = null,
+        longitude: Double? = null,
+        accuracy: Double? = null
+    ): Notification {
         val alertIntent = Intent(applicationContext, IncidentAlertActivity::class.java).apply {
             this.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("incident_id", incidentId)
             putExtra("category", category)
             putExtra("priority", priority)
             putExtra("student_name", studentName)
+            putExtra("studentName", studentName)
             putExtra("student_id", studentId)
+            putExtra("studentId", studentId)
             putExtra("student_phone", studentPhone)
+            putExtra("studentPhone", studentPhone)
             putExtra("location", location)
             putExtra("description", description)
             if (latitude != null) putExtra("latitude", latitude)
@@ -281,7 +408,8 @@ class EmergencyAlertForegroundService : Service() {
         val locDetails = if (latitude != null && longitude != null) {
             "$location [GPS: %.4f, %.4f]".format(latitude, longitude)
         } else location
-        val body = "$studentName reported $category at $locDetails"
+        val stuLabel = if (studentId.isNotBlank()) "$studentName ($studentId)" else studentName
+        val body = "$stuLabel reported $category at $locDetails"
 
         val notificationBuilder = NotificationCompat.Builder(this, EmergencySosApp.CHANNEL_EMERGENCY_ID)
             .setSmallIcon(R.drawable.ic_stat_sos)
@@ -326,20 +454,7 @@ class EmergencyAlertForegroundService : Service() {
         )
         notificationBuilder.addAction(R.drawable.ic_stat_sos, "STOP ALARM", stopAlarmPendingIntent)
 
-        val notification = notificationBuilder.build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-
-        // Try direct launch if in background
-        try {
-            startActivity(alertIntent)
-        } catch (e: Exception) {
-            Log.d(TAG, "Direct activity launch notice (handled by full-screen intent): ${e.message}")
-        }
+        return notificationBuilder.build()
     }
 
     private fun handleStopAlarm() {
@@ -445,6 +560,56 @@ class EmergencyAlertForegroundService : Service() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.d(TAG, "EmergencyAlertForegroundService onTaskRemoved: app swiped away from recent tasks.")
+        val prefs = PreferencesManager.getInstance(applicationContext)
+        if (prefs.isLoggedIn && prefs.userRole == "RESPONDER") {
+            try {
+                val restartIntent = Intent(applicationContext, EmergencyAlertForegroundService::class.java).apply {
+                    action = ACTION_START_MONITOR
+                }
+                val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                } else {
+                    PendingIntent.FLAG_UPDATE_CURRENT
+                }
+                val pendingIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PendingIntent.getForegroundService(applicationContext, 9112, restartIntent, piFlags)
+                } else {
+                    PendingIntent.getService(applicationContext, 9112, restartIntent, piFlags)
+                }
+                val alarmManager = applicationContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                val triggerAt = SystemClock.elapsedRealtime() + 1000L
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager?.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                } else {
+                    alarmManager?.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                }
+                Log.d(TAG, "EmergencyAlertForegroundService: Scheduled auto-restart alarm via AlarmManager")
+            } catch (e: Exception) {
+                Log.w(TAG, "EmergencyAlertForegroundService: Could not schedule auto-restart alarm: ${e.message}")
+            }
+        }
+    }
+
+    private fun isRecent(createdAtStr: String?): Boolean {
+        if (createdAtStr.isNullOrBlank()) return true
+        return try {
+            val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            format.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            val cleanStr = createdAtStr.substringBefore('.').substringBefore('Z')
+            val date = format.parse(cleanStr)
+            if (date != null) {
+                val ageMs = System.currentTimeMillis() - date.time
+                // Consider recent if created within past 30 minutes (or future clock skew up to 5 min)
+                ageMs in -300_000L..1_800_000L
+            } else true
+        } catch (_: Exception) {
+            true
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacks(autoSilenceRunnable)
@@ -461,6 +626,7 @@ class EmergencyAlertForegroundService : Service() {
         const val ACTION_START_MONITOR = "com.emergencysos.responder.ACTION_START_MONITOR"
         const val ACTION_STOP_MONITOR = "com.emergencysos.responder.ACTION_STOP_MONITOR"
         const val ACTION_START_ALERT = "com.emergencysos.responder.ACTION_START_ALERT"
+        const val ACTION_UPDATE_LOCATION = "com.emergencysos.responder.ACTION_UPDATE_LOCATION"
         const val ACTION_STOP_ALARM = "com.emergencysos.responder.ACTION_STOP_ALARM"
         const val ACTION_ACKNOWLEDGE = "com.emergencysos.responder.ACTION_ACKNOWLEDGE"
         const val ACTION_DISMISS = "com.emergencysos.responder.ACTION_DISMISS"
@@ -525,6 +691,29 @@ class EmergencyAlertForegroundService : Service() {
                 putExtra(EXTRA_STUDENT_PHONE, studentPhone)
                 putExtra(EXTRA_LOCATION, location)
                 putExtra(EXTRA_DESCRIPTION, description)
+                if (latitude != null) putExtra(EXTRA_LATITUDE, latitude)
+                if (longitude != null) putExtra(EXTRA_LONGITUDE, longitude)
+                if (accuracy != null) putExtra(EXTRA_ACCURACY, accuracy)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun updateLocation(
+            context: Context,
+            incidentId: String,
+            location: String,
+            latitude: Double? = null,
+            longitude: Double? = null,
+            accuracy: Double? = null
+        ) {
+            val intent = Intent(context, EmergencyAlertForegroundService::class.java).apply {
+                this.action = ACTION_UPDATE_LOCATION
+                putExtra(EXTRA_INCIDENT_ID, incidentId)
+                putExtra(EXTRA_LOCATION, location)
                 if (latitude != null) putExtra(EXTRA_LATITUDE, latitude)
                 if (longitude != null) putExtra(EXTRA_LONGITUDE, longitude)
                 if (accuracy != null) putExtra(EXTRA_ACCURACY, accuracy)

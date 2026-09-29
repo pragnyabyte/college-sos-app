@@ -21,6 +21,8 @@ object AlarmSoundPlayer {
     private var mediaPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var isPlaying = false
+    private var audioFocusRequest: android.media.AudioFocusRequest? = null
+    private var audioManager: AudioManager? = null
 
     private val VIBRATE_PATTERN = longArrayOf(0, 800, 400, 800, 400, 800, 400, 800)
 
@@ -53,7 +55,7 @@ object AlarmSoundPlayer {
 
         // 2. Play Alarm audio using USAGE_ALARM stream (routes via Alarm volume, independent of silent ringer)
         try {
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 10
             val currentVol = audioManager?.getStreamVolume(AudioManager.STREAM_ALARM) ?: 5
             if (currentVol < (maxVol * 0.7).toInt()) {
@@ -67,6 +69,24 @@ object AlarmSoundPlayer {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
                 .build()
+
+            // Request transient exclusive audio focus for emergency alarm
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                    .setAudioAttributes(audioAttributes)
+                    .setOnAudioFocusChangeListener { focusChange ->
+                        Log.d(TAG, "Audio focus changed: $focusChange")
+                    }
+                    .build()
+                audioFocusRequest?.let { audioManager?.requestAudioFocus(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_ALARM,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                )
+            }
 
             // Resolve sound: bundled emergency siren via compiled resource ID or fallback to system alarm
             val sirenUri: Uri = try {
@@ -130,6 +150,19 @@ object AlarmSoundPlayer {
             Log.w(TAG, "Vibrator cancel notice: ${e.message}")
         } finally {
             vibrator = null
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.abandonAudioFocus(null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Abandon audio focus notice: ${e.message}")
+        } finally {
+            audioFocusRequest = null
         }
     }
 
