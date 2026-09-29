@@ -8,8 +8,8 @@ let fcmInitialized = false;
 let fcmError = null;
 let hasServiceAccount = false;
 
-export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || 'RESP-1111';
-export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2026';
+export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || 'ER-2026';
+export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2611';
 
 /**
  * Initializes Firebase Admin SDK safely without crashing if credentials are not yet supplied.
@@ -76,7 +76,7 @@ export async function ensurePermanentResponder() {
 
     await firestore.collection('emergency_responders').doc(RESPONDER_ID).set({
       responderId: RESPONDER_ID,
-      name: 'Campus Emergency Response Unit (RESP-1111)',
+      name: 'Campus Emergency Response Unit (ER-2026)',
       role: 'responder',
       departmentId: 'DEPT_SECURITY',
       active: true,
@@ -91,7 +91,7 @@ export async function ensurePermanentResponder() {
 }
 
 /**
- * Registers or updates a responder device FCM token under RESP-1111 in Cloud Firestore.
+ * Registers or updates a responder device FCM token under ER-2026 in Cloud Firestore.
  * Supports multiple independent phones and web installations per responder.
  */
 export async function registerResponderDevice({

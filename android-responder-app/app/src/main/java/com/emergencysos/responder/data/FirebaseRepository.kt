@@ -40,7 +40,7 @@ class FirebaseRepository private constructor(private val context: Context) {
 
     /**
      * Authenticates the emergency responder against Cloud Firestore.
-     * Preserves configured responder ID (RESP-1111) and PIN (2026).
+     * Preserves configured responder ID (ER-2026) and PIN (2611).
      */
     suspend fun loginResponder(responderId: String, pin: String, enteredName: String? = null): Result<User> {
         return try {
@@ -55,14 +55,17 @@ class FirebaseRepository private constructor(private val context: Context) {
             }
 
             // Verify authorized credentials
-            if (cleanId != "RESP-1111") {
+            if (cleanId == "RESP-1111") {
+                return Result.failure(SecurityException("Registration ID RESP-1111 has been retired. Please use ER-2026."))
+            }
+            if (cleanId != "ER-2026") {
                 return Result.failure(SecurityException("Invalid Registration Number"))
             }
-            if (cleanPin != "2026") {
+            if (cleanPin != "2611") {
                 return Result.failure(SecurityException("Invalid PIN"))
             }
 
-            val displayName = if (!enteredName.isNullOrBlank()) enteredName.trim() else "Campus Emergency Response Unit (RESP-1111)"
+            val displayName = if (!enteredName.isNullOrBlank()) enteredName.trim() else "Campus Emergency Response Unit (ER-2026)"
 
             // Sync authorized responder profile in Cloud Firestore
             try {
@@ -98,7 +101,7 @@ class FirebaseRepository private constructor(private val context: Context) {
     /**
      * Registers the Android device and its FCM push token in Cloud Firestore ('responder_devices' collection).
      */
-    suspend fun registerDeviceToken(fcmToken: String, responderId: String = "RESP-1111"): Result<Boolean> {
+    suspend fun registerDeviceToken(fcmToken: String, responderId: String = "ER-2026"): Result<Boolean> {
         return try {
             val deviceId = prefs.deviceId
             val deviceDoc = firestore.collection("responder_devices").document(deviceId)
@@ -302,7 +305,7 @@ class FirebaseRepository private constructor(private val context: Context) {
             val docRef = firestore.collection("incidents").document(incidentId)
             val now = getCurrentIsoTimestamp()
             val responderName = prefs.responderName.ifEmpty { "Campus Emergency Response Unit" }
-            val responderId = prefs.responderId.ifEmpty { "RESP-1111" }
+            val responderId = prefs.responderId.ifEmpty { "ER-2026" }
 
             val timelineItem = hashMapOf(
                 "status" to newStatus,
@@ -457,7 +460,7 @@ class FirebaseRepository private constructor(private val context: Context) {
             if (!Regex("^[A-Za-z0-9_\\-\\.\\/]{2,50}$").matches(cleanId)) {
                 return Result.failure(IllegalArgumentException("Invalid Registration Number format. Must be 2-50 alphanumeric characters."))
             }
-            if (cleanId == "RESP-1111") {
+            if (cleanId == "RESP-1111" || cleanId == "ER-2026" || cleanId.startsWith("ER-")) {
                 return Result.failure(IllegalArgumentException("This registration ID is reserved for emergency services."))
             }
 
@@ -511,8 +514,8 @@ class FirebaseRepository private constructor(private val context: Context) {
             if (cleanId.contains("@")) {
                 return Result.failure(IllegalArgumentException("Email addresses are not accepted. Please enter your Registration / ID No."))
             }
-            if (cleanId == "RESP-1111") {
-                return Result.failure(IllegalArgumentException("RESP-1111 is reserved for Emergency Responders. Please select Emergency Responder role."))
+            if (cleanId == "RESP-1111" || cleanId == "ER-2026") {
+                return Result.failure(IllegalArgumentException("This ID is reserved for Emergency Responders. Please select Emergency Responder role."))
             }
 
             val studentRef = firestore.collection("students").document(cleanId)

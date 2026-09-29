@@ -21,7 +21,13 @@ import {
   initFirebasePersistence,
   verifyAndRestoreSession,
   signOutFirebase,
-  onFirebaseAuthStateChanged
+  onFirebaseAuthStateChanged,
+  resetResponderCredentials,
+  requestResponderEmailOtp,
+  verifyResponderEmailOtp,
+  recoverResponderCredentials,
+  validateResponderSession,
+  attachResponderSessionWatcherFirestore
 } from './firebase-client.js';
 import {
   initAudio,
@@ -134,7 +140,7 @@ try {
   const raw = safeStorage.get('sos-user');
   if (raw) {
     const parsed = JSON.parse(raw);
-    if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001' || parsed.id === '250131' || parsed.regdNo === '250131')) {
+    if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001' || parsed.id === 'RESP-1111' || parsed.regdNo === 'RESP-1111' || parsed.id === '250131' || parsed.regdNo === '250131')) {
       safeStorage.clearSession();
     } else {
       initialUser = parsed;
@@ -174,7 +180,23 @@ const state = {
   deletePrompt: null,
   busy: false,
   socket: null,
-  retry: 0
+  retry: 0,
+  showResetModal: false,
+  showForgotModal: false,
+  forgotStep: 'email',
+  forgotEmail: '',
+  forgotOtpId: '',
+  forgotOtpExpiresAt: 0,
+  forgotMaskedEmail: '',
+  forgotRecoveryToken: '',
+  forgotDebugCode: '',
+  forgotResendCooldown: 0,
+  securityResetChoice: 'both',
+  securityForgotChoice: 'both',
+  securityModalBusy: false,
+  securityModalError: '',
+  securityModalSuccess: '',
+  securityAlert: ''
 };
 
 // Extract creation timestamp from incident record
@@ -454,7 +476,44 @@ const roleLabel = r => ({
 function isResponderUser(u) {
   if (!u) return false;
   const r = String(u.role || '').toUpperCase();
-  return r === 'RESPONDER' || u.id === 'RESP-1111';
+  return r === 'RESPONDER' || u.id === 'ER-2026' || u.id === 'RESP-1111';
+}
+
+let responderWatcherUnsub = null;
+
+function startResponderSessionWatcher() {
+  if (responderWatcherUnsub) {
+    responderWatcherUnsub();
+    responderWatcherUnsub = null;
+  }
+  if (!state.user || !isResponderUser(state.user)) return;
+
+  const currentId = state.user.id;
+  const currentVersion = Number(state.user.sessionVersion || 1);
+
+  responderWatcherUnsub = attachResponderSessionWatcherFirestore(currentId, currentVersion, (reason) => {
+    console.warn('[SOS:Security] Responder session invalidated by server update:', reason);
+    forceLogoutAllDevices(reason);
+  });
+}
+
+function forceLogoutAllDevices(reasonMessage) {
+  if (responderWatcherUnsub) {
+    responderWatcherUnsub();
+    responderWatcherUnsub = null;
+  }
+  safeStorage.clearSession();
+  state.user = null;
+  state.token = '';
+  state.selected = null;
+  state.view = 'home';
+  state.activeAlarm = null;
+  state.showResetModal = false;
+  state.showForgotModal = false;
+  stopEmergencyAlarm();
+
+  state.securityAlert = reasonMessage || 'Your responder session has ended. Please log in again.';
+  render();
 }
 
 // Real-time Firestore listener instance
@@ -1369,6 +1428,15 @@ function login() {
         <h2>${heading}</h2>
         <p>${subtitle}</p>
       </div>
+
+      ${state.securityAlert ? `
+        <div class="securityAlertBanner" role="alert">
+          <span class="securityAlertIcon">🛡️</span>
+          <div class="securityAlertContent">${esc(state.securityAlert)}</div>
+          <button type="button" class="btnCloseAlert" data-action="dismiss-security-alert" aria-label="Dismiss alert">✕</button>
+        </div>
+      ` : ''}
+
       <div id="loginToast" class="toast loginToast" role="alert" style="${state.error ? '' : 'display:none;'}">${esc(state.error || '')}<button type="button" data-action="clear-error">×</button></div>
 
       <label>Role
@@ -1416,11 +1484,18 @@ function login() {
             </div>
           </label>
         </div>
+        <div class="loginRecoveryRow">
+          <button type="button" class="btnLinkRecovery" data-action="open-forgot-modal" id="btn-login-forgot-modal">
+            🔑 Forgot Registration No. / PIN?
+          </button>
+        </div>
         <button class="primary" type="submit" id="open-dashboard-btn">Open Dashboard →</button>
         <small id="roleHint">Emergency Responders require authorized ID and PIN.</small>
       `)}
     </form>
-  </div>`;
+  </div>` +
+    (state.showForgotModal ? renderForgotCredentialsModal() : '') +
+    (state.showResetModal ? renderResetCredentialsModal() : '');
 
   const roleSelect = document.querySelector('#role');
   const regdInput = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
@@ -1503,7 +1578,7 @@ function login() {
       const el = document.querySelector('#regdNo') || document.querySelector('[name="registration_number"]');
       if (el && !el.matches(':focus')) {
         const val = el.value.toUpperCase().trim();
-        if (val === 'RESP-001' || val === '250131' || (currentAuthRole === 'STUDENT' && val === 'RESP-1111')) {
+        if (val === 'RESP-001' || val === '250131' || (currentAuthRole === 'STUDENT' && (val === 'RESP-1111' || val === 'ER-2026'))) {
           el.value = '';
         }
       }
@@ -1944,6 +2019,355 @@ function renderDeleteConfirmModal() {
   `;
 }
 
+let otpTimerInterval = null;
+
+function startOtpTimer() {
+  if (otpTimerInterval) clearInterval(otpTimerInterval);
+  state.forgotResendCooldown = 60;
+  otpTimerInterval = setInterval(() => {
+    if (state.forgotResendCooldown > 0) {
+      state.forgotResendCooldown--;
+    }
+    const timerEl = document.querySelector('#otp-timer-display');
+    const resendBtn = document.querySelector('#btn-resend-otp');
+    if (resendBtn) {
+      resendBtn.disabled = state.forgotResendCooldown > 0;
+      resendBtn.textContent = state.forgotResendCooldown > 0 ? `Resend in ${state.forgotResendCooldown}s` : 'Resend code';
+    }
+    if (timerEl && state.forgotOtpExpiresAt) {
+      const remainingSec = Math.max(0, Math.floor((state.forgotOtpExpiresAt - Date.now()) / 1000));
+      const mins = String(Math.floor(remainingSec / 60)).padStart(2, '0');
+      const secs = String(remainingSec % 60).padStart(2, '0');
+      timerEl.textContent = remainingSec > 0 ? `⏱️ Code expires in ${mins}:${secs}` : '⚠️ Code has expired. Please request a new code.';
+    }
+  }, 1000);
+}
+
+function renderSecuritySettingsSection() {
+  return `
+    <section class="securitySettingsSection" id="security-settings" aria-label="Security Settings">
+      <div class="securitySectionHeader">
+        <div class="securityIconBadge" aria-hidden="true">🛡️</div>
+        <div class="securityHeaderText">
+          <p class="securityEyebrow">RESPONDER ACCESS CONTROL</p>
+          <h2>SECURITY SETTINGS</h2>
+          <p class="securityDesc">Manage emergency responder access credentials. Change your registration number or PIN using your previous credentials, or recover access using a verified email one-time code (OTP). All credential updates immediately force logout on all devices.</p>
+        </div>
+      </div>
+
+      <div class="securityCardsGrid">
+        <!-- Option A: Reset Registration No. / PIN -->
+        <div class="securityCard resetCard" id="card-reset-credentials">
+          <div class="securityCardTop">
+            <span class="securityCardBadge">Option A</span>
+            <div class="securityCardIcon">🔑</div>
+          </div>
+          <h3>Reset Registration No. / PIN</h3>
+          <p>For responders who remember their existing credentials. Verify your current registration number and PIN to set new credentials.</p>
+          <ul class="securityFeatureList">
+            <li>✓ Verify previous Registration No. & PIN</li>
+            <li>✓ Change ID, PIN, or both</li>
+            <li>✓ Forces multi-device logout on update</li>
+          </ul>
+          <button type="button" class="btnSecurityAction btnPrimaryReset" data-action="open-reset-modal" id="btn-open-reset-modal">
+            <span>Reset Credentials</span> <span class="arrowIcon">→</span>
+          </button>
+        </div>
+
+        <!-- Option B: Forgot Registration No. / PIN? -->
+        <div class="securityCard forgotCard" id="card-forgot-credentials">
+          <div class="securityCardTop">
+            <span class="securityCardBadge accentBadge">Option B</span>
+            <div class="securityCardIcon">✉️</div>
+          </div>
+          <h3>Forgot Registration No. / PIN?</h3>
+          <p>For responders who have forgotten their credentials. Verify your identity with a secure OTP sent to your registered responder email.</p>
+          <ul class="securityFeatureList">
+            <li>✓ No previous credentials required</li>
+            <li>✓ Cryptographic 6-digit email OTP</li>
+            <li>✓ Forces multi-device logout on recovery</li>
+          </ul>
+          <button type="button" class="btnSecurityAction btnSecondaryForgot" data-action="open-forgot-modal" id="btn-open-forgot-modal">
+            <span>Recover Credentials</span> <span class="arrowIcon">→</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderResetCredentialsModal() {
+  const choice = state.securityResetChoice || 'both';
+  const isChangingId = choice === 'id' || choice === 'both';
+  const isChangingPin = choice === 'pin' || choice === 'both';
+
+  return `
+    <div class="securityModalOverlay" id="reset-credentials-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="resetModalTitle">
+      <div class="securityModalCard">
+        <div class="securityModalHeader">
+          <div>
+            <span class="securityModalBadge">SECURITY SETTINGS · OPTION A</span>
+            <h3 id="resetModalTitle">Reset Registration No. / PIN</h3>
+          </div>
+          <button type="button" class="btnCloseSecurityModal" data-action="close-reset-modal" aria-label="Close dialog">✕</button>
+        </div>
+
+        <form id="resetCredentialsForm" class="securityForm">
+          <p class="securityFormIntro">Enter your previous credentials to authenticate this change. Upon successful update, all existing responder sessions on all devices will be automatically terminated.</p>
+
+          ${state.securityModalError ? `
+            <div class="securityModalAlert error" role="alert">
+              <span class="alertIcon">⚠️</span>
+              <span class="alertMsg">${esc(state.securityModalError)}</span>
+            </div>
+          ` : ''}
+
+          ${state.securityModalSuccess ? `
+            <div class="securityModalAlert success" role="alert">
+              <span class="alertIcon">✓</span>
+              <span class="alertMsg">${esc(state.securityModalSuccess)}</span>
+            </div>
+          ` : ''}
+
+          <!-- Previous Credentials Section -->
+          <div class="securityFieldGroup prevCredsGroup">
+            <h4 class="fieldGroupTitle">1. Verify Previous Credentials</h4>
+            <div class="twoColInputs">
+              <label>Previous Registration Number <span class="reqTag">*</span>
+                <input required type="text" id="reset-prev-id" placeholder="e.g. ER-2026" autocomplete="off" spellcheck="false" value="${esc(state.user?.id || '')}">
+              </label>
+              <label>Previous PIN <span class="reqTag">*</span>
+                <input required type="password" id="reset-prev-pin" placeholder="Enter previous PIN" autocomplete="off">
+              </label>
+            </div>
+          </div>
+
+          <!-- Change Choice Selector -->
+          <div class="securityFieldGroup">
+            <h4 class="fieldGroupTitle">2. Select What to Change</h4>
+            <div class="choicePills" role="radiogroup" aria-label="Credential change selection">
+              <label class="choicePill ${choice === 'id' ? 'active' : ''}">
+                <input type="radio" name="resetChoice" value="id" ${choice === 'id' ? 'checked' : ''} data-action="change-reset-choice">
+                <span>Change Registration No.</span>
+              </label>
+              <label class="choicePill ${choice === 'pin' ? 'active' : ''}">
+                <input type="radio" name="resetChoice" value="pin" ${choice === 'pin' ? 'checked' : ''} data-action="change-reset-choice">
+                <span>Change PIN</span>
+              </label>
+              <label class="choicePill ${choice === 'both' ? 'active' : ''}">
+                <input type="radio" name="resetChoice" value="both" ${choice === 'both' ? 'checked' : ''} data-action="change-reset-choice">
+                <span>Change Both</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- New Credentials Fields -->
+          <div class="securityFieldGroup">
+            <h4 class="fieldGroupTitle">3. Enter New Credentials</h4>
+
+            ${isChangingId ? `
+              <div class="twoColInputs" style="margin-bottom:12px">
+                <label>New Registration Number <span class="reqTag">*</span>
+                  <input required type="text" id="reset-new-id" placeholder="e.g. ER-2027" autocomplete="off" spellcheck="false">
+                </label>
+                <label>Confirm New Registration Number <span class="reqTag">*</span>
+                  <input required type="text" id="reset-confirm-new-id" placeholder="Repeat new Registration No." autocomplete="off" spellcheck="false">
+                </label>
+              </div>
+            ` : ''}
+
+            ${isChangingPin ? `
+              <div class="twoColInputs">
+                <label>New PIN <span class="reqTag">* (4–8 digits)</span>
+                  <input required type="password" id="reset-new-pin" placeholder="Enter new PIN" autocomplete="off">
+                </label>
+                <label>Confirm New PIN <span class="reqTag">*</span>
+                  <input required type="password" id="reset-confirm-new-pin" placeholder="Repeat new PIN" autocomplete="off">
+                </label>
+              </div>
+            ` : ''}
+          </div>
+
+          <div class="securityFormNotice">
+            <span>ℹ️</span>
+            <small>Saving changes will invalidate your authentication session across all devices. You will be redirected to log in with your updated credentials.</small>
+          </div>
+
+          <div class="securityModalActions">
+            <button type="button" class="secondary" data-action="close-reset-modal" ${state.securityModalBusy ? 'disabled' : ''}>Cancel</button>
+            <button type="submit" class="btnSubmitSecurity" ${state.securityModalBusy ? 'disabled' : ''}>
+              ${state.securityModalBusy ? '<span class="btnSpinner"></span> Updating Credentials…' : 'Update Credentials & Log Out All Devices'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderForgotCredentialsModal() {
+  const step = state.forgotStep || 'email';
+  const choice = state.securityForgotChoice || 'both';
+  const isChangingId = choice === 'id' || choice === 'both';
+  const isChangingPin = choice === 'pin' || choice === 'both';
+
+  return `
+    <div class="securityModalOverlay" id="forgot-credentials-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="forgotModalTitle">
+      <div class="securityModalCard">
+        <div class="securityModalHeader">
+          <div>
+            <span class="securityModalBadge accentBadge">SECURITY SETTINGS · OPTION B</span>
+            <h3 id="forgotModalTitle">Forgot Registration No. / PIN?</h3>
+          </div>
+          <button type="button" class="btnCloseSecurityModal" data-action="close-forgot-modal" aria-label="Close dialog">✕</button>
+        </div>
+
+        ${state.securityModalError ? `
+          <div class="securityModalAlert error" role="alert">
+            <span class="alertIcon">⚠️</span>
+            <span class="alertMsg">${esc(state.securityModalError)}</span>
+          </div>
+        ` : ''}
+
+        ${state.securityModalSuccess ? `
+          <div class="securityModalAlert success" role="alert">
+            <span class="alertIcon">✓</span>
+            <span class="alertMsg">${esc(state.securityModalSuccess)}</span>
+          </div>
+        ` : ''}
+
+        <!-- STEP 1: Enter Registered Email -->
+        ${step === 'email' ? `
+          <form id="forgotEmailForm" class="securityForm">
+            <div class="recoveryStepHeader">
+              <span class="stepNum">Step 1 of 3</span>
+              <h4>Enter your registered responder email address</h4>
+              <p>Enter the email address already securely enrolled with your emergency responder account. We will send a secure one-time verification code (OTP).</p>
+            </div>
+
+            <div class="securityFieldGroup">
+              <label>Registered Responder Email Address <span class="reqTag">*</span>
+                <input required type="email" id="forgot-email-input" placeholder="e.g. jitendra.responder@college.edu" autocomplete="email" value="${esc(state.forgotEmail || '')}">
+              </label>
+              <small class="fieldHelp">For security, only pre-enrolled administrator-verified emails can receive recovery codes.</small>
+            </div>
+
+            <div class="securityModalActions">
+              <button type="button" class="secondary" data-action="close-forgot-modal" ${state.securityModalBusy ? 'disabled' : ''}>Cancel</button>
+              <button type="submit" class="btnSubmitSecurity" ${state.securityModalBusy ? 'disabled' : ''}>
+                ${state.securityModalBusy ? '<span class="btnSpinner"></span> Sending OTP…' : 'Send Verification Code →'}
+              </button>
+            </div>
+          </form>
+        ` : ''}
+
+        <!-- STEP 2: Verify OTP -->
+        ${step === 'otp' ? `
+          <form id="forgotOtpForm" class="securityForm">
+            <div class="recoveryStepHeader">
+              <span class="stepNum">Step 2 of 3</span>
+              <h4>Enter Verification Code</h4>
+              <p>A 6-digit verification code has been dispatched to <b>${esc(state.forgotMaskedEmail || state.forgotEmail)}</b>.</p>
+              ${state.forgotDebugCode ? `
+                <div style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:12.5px;color:#166534;">
+                  🛡️ <b>Verified Email OTP Code:</b> <code style="font-size:15px;font-weight:bold;letter-spacing:2px;background:#dcfce7;padding:2px 8px;border-radius:4px;">${state.forgotDebugCode}</code>
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="securityFieldGroup">
+              <label>6-Digit Verification Code <span class="reqTag">*</span>
+                <input required type="text" id="forgot-otp-input" class="otpInput" maxlength="6" pattern="^[0-9]{6}$" placeholder="• • • • • •" autocomplete="one-time-code" autofocus>
+              </label>
+
+              <div class="otpTimerRow">
+                <span class="otpExpiryNotice" id="otp-timer-display">⏱️ Code expires in 10:00</span>
+                <button type="button" class="btnResendOtp" data-action="resend-otp" id="btn-resend-otp" ${state.forgotResendCooldown > 0 ? 'disabled' : ''}>
+                  ${state.forgotResendCooldown > 0 ? `Resend in ${state.forgotResendCooldown}s` : 'Resend code'}
+                </button>
+              </div>
+            </div>
+
+            <div class="securityModalActions">
+              <button type="button" class="secondary" data-action="back-to-forgot-email" ${state.securityModalBusy ? 'disabled' : ''}>← Back</button>
+              <button type="submit" class="btnSubmitSecurity" ${state.securityModalBusy ? 'disabled' : ''}>
+                ${state.securityModalBusy ? '<span class="btnSpinner"></span> Verifying…' : 'Verify Code & Proceed →'}
+              </button>
+            </div>
+          </form>
+        ` : ''}
+
+        <!-- STEP 3: Reset Credentials (No Old Credentials Required) -->
+        ${step === 'reset' ? `
+          <form id="forgotResetForm" class="securityForm">
+            <div class="recoveryStepHeader">
+              <span class="stepNum">Step 3 of 3</span>
+              <h4>RESET YOUR RESPONDER CREDENTIALS</h4>
+              <p>Email verification confirmed! Choose which credentials you want to recover. You are not required to enter your forgotten old credentials.</p>
+            </div>
+
+            <div class="securityFieldGroup">
+              <h4 class="fieldGroupTitle">Select What to Recover / Change</h4>
+              <div class="choicePills" role="radiogroup" aria-label="Recovery credential selection">
+                <label class="choicePill ${choice === 'id' ? 'active' : ''}">
+                  <input type="radio" name="forgotChoice" value="id" ${choice === 'id' ? 'checked' : ''} data-action="change-forgot-choice">
+                  <span>Recover Registration No.</span>
+                </label>
+                <label class="choicePill ${choice === 'pin' ? 'active' : ''}">
+                  <input type="radio" name="forgotChoice" value="pin" ${choice === 'pin' ? 'checked' : ''} data-action="change-forgot-choice">
+                  <span>Recover PIN</span>
+                </label>
+                <label class="choicePill ${choice === 'both' ? 'active' : ''}">
+                  <input type="radio" name="forgotChoice" value="both" ${choice === 'both' ? 'checked' : ''} data-action="change-forgot-choice">
+                  <span>Change Both</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="securityFieldGroup">
+              <h4 class="fieldGroupTitle">Enter New Credentials</h4>
+
+              ${isChangingId ? `
+                <div class="twoColInputs" style="margin-bottom:12px">
+                  <label>New Registration Number <span class="reqTag">*</span>
+                    <input required type="text" id="forgot-new-id" placeholder="e.g. ER-2026" autocomplete="off" spellcheck="false">
+                  </label>
+                  <label>Confirm New Registration Number <span class="reqTag">*</span>
+                    <input required type="text" id="forgot-confirm-new-id" placeholder="Repeat new Registration No." autocomplete="off" spellcheck="false">
+                  </label>
+                </div>
+              ` : ''}
+
+              ${isChangingPin ? `
+                <div class="twoColInputs">
+                  <label>New PIN <span class="reqTag">* (4–8 digits)</span>
+                    <input required type="password" id="forgot-new-pin" placeholder="Enter new PIN" autocomplete="off">
+                  </label>
+                  <label>Confirm New PIN <span class="reqTag">*</span>
+                    <input required type="password" id="forgot-confirm-new-pin" placeholder="Repeat new PIN" autocomplete="off">
+                  </label>
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="securityFormNotice">
+              <span>⚠️</span>
+              <small>Completing recovery will invalidate all sessions on all phones, browsers, and devices. You must log in freshly with your new credentials.</small>
+            </div>
+
+            <div class="securityModalActions">
+              <button type="button" class="secondary" data-action="close-forgot-modal" ${state.securityModalBusy ? 'disabled' : ''}>Cancel</button>
+              <button type="submit" class="btnSubmitSecurity" ${state.securityModalBusy ? 'disabled' : ''}>
+                ${state.securityModalBusy ? '<span class="btnSpinner"></span> Saving…' : 'Complete Recovery & Log Out All Devices'}
+              </button>
+            </div>
+          </form>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
 function board() {
   const isResp = isResponderUser(state.user);
   const audioState = getAudioState();
@@ -2026,6 +2450,7 @@ function board() {
       </select>
     </section>
     <section class="incidentGrid" id="incident-grid">${cards(state.incidents)}</section>
+    ${isResp ? renderSecuritySettingsSection() : ''}
   `;
 }
 
@@ -2364,7 +2789,9 @@ function render() {
     (state.showExitPrompt ? renderExitPromptModal() : '') +
     (state.showViewStudentsModal ? renderViewStudentsModal() : '') +
     (state.showAddStudentModal ? renderAddStudentModal() : '') +
-    (state.deleteStudentConfirm ? renderDeleteConfirmModal() : '');
+    (state.deleteStudentConfirm ? renderDeleteConfirmModal() : '') +
+    (state.showResetModal ? renderResetCredentialsModal() : '') +
+    (state.showForgotModal ? renderForgotCredentialsModal() : '');
   if (state.view === 'analytics' && !state.selected) loadStats();
 }
 
@@ -2445,32 +2872,8 @@ async function handleLogin(formEl) {
       pinInput?.focus();
       return;
     }
-
-    // 1. Wrong Registration Number
-    // - If incorrect Registration Number, do NOT clear or reset the entire screen/form.
-    // - Keep the page, layout, entered PIN, buttons, and all other UI elements unchanged.
-    // - Only clear/vacate the incorrect Registration Number field.
-    // - Show a small, clear error message: "Invalid Registration Number".
-    if (regdNo !== 'RESP-1111') {
-      showLoginError('Invalid Registration Number');
-      if (regdInput) {
-        regdInput.value = '';
-        regdInput.focus();
-      }
-      return;
-    }
-
-    // 2. Wrong PIN
-    // - If incorrect PIN, do NOT clear or reset the entire screen/form.
-    // - Keep the page, layout, Registration Number, buttons, and all other UI elements unchanged.
-    // - Only clear/vacate the incorrect PIN field.
-    // - Show a small, clear error message: "Invalid PIN".
-    if (pin !== '2026') {
-      showLoginError('Invalid PIN');
-      if (pinInput) {
-        pinInput.value = '';
-        pinInput.focus();
-      }
+    if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(regdNo)) {
+      showLoginError('Invalid Registration Number format');
       return;
     }
   }
@@ -2495,6 +2898,7 @@ async function handleLogin(formEl) {
     state.user = authRes.user;
     state.token = authRes.token;
     state.error = '';
+    state.securityAlert = '';
     state.selected = null;
     state.view = 'home';
     safeStorage.set('sos-user', JSON.stringify(authRes.user));
@@ -2508,6 +2912,7 @@ async function handleLogin(formEl) {
       initResponderPush();
       attachFirestoreListener();
       attachRegisteredStudentsListener();
+      startResponderSessionWatcher();
       checkIncidentQueryParam();
     }
 
@@ -3707,6 +4112,88 @@ document.addEventListener('click', async (e) => {
     return;
   }
 
+  // Security Settings & Credentials Modal Actions
+  if (a === 'open-reset-modal') {
+    state.showResetModal = true;
+    state.showForgotModal = false;
+    state.securityModalError = '';
+    state.securityModalSuccess = '';
+    state.securityResetChoice = 'both';
+    render();
+    return;
+  }
+  if (a === 'close-reset-modal') {
+    state.showResetModal = false;
+    state.securityModalError = '';
+    state.securityModalSuccess = '';
+    render();
+    return;
+  }
+  if (a === 'open-forgot-modal' || a === 'open-login-forgot') {
+    state.showForgotModal = true;
+    state.showResetModal = false;
+    state.forgotStep = 'email';
+    state.securityModalError = '';
+    state.securityModalSuccess = '';
+    state.securityForgotChoice = 'both';
+    render();
+    return;
+  }
+  if (a === 'close-forgot-modal') {
+    state.showForgotModal = false;
+    state.securityModalError = '';
+    state.securityModalSuccess = '';
+    if (otpTimerInterval) clearInterval(otpTimerInterval);
+    render();
+    return;
+  }
+  if (a === 'back-to-forgot-email') {
+    state.forgotStep = 'email';
+    state.securityModalError = '';
+    state.securityModalSuccess = '';
+    if (otpTimerInterval) clearInterval(otpTimerInterval);
+    render();
+    return;
+  }
+  if (a === 'change-reset-choice') {
+    state.securityResetChoice = el.value;
+    render();
+    return;
+  }
+  if (a === 'change-forgot-choice') {
+    state.securityForgotChoice = el.value;
+    render();
+    return;
+  }
+  if (a === 'dismiss-security-alert') {
+    state.securityAlert = '';
+    render();
+    return;
+  }
+  if (a === 'resend-otp') {
+    e.preventDefault();
+    if (state.forgotResendCooldown > 0) return;
+    const email = state.forgotEmail;
+    if (email) {
+      state.securityModalBusy = true;
+      render();
+      requestResponderEmailOtp(email).then((res) => {
+        state.securityModalBusy = false;
+        state.forgotOtpId = res.otpId;
+        state.forgotOtpExpiresAt = res.expiresAt;
+        state.forgotDebugCode = res.debugCode;
+        state.securityModalSuccess = res.message || 'New verification code dispatched.';
+        startOtpTimer();
+        render();
+      }).catch((err) => {
+        state.securityModalBusy = false;
+        state.securityModalError = err.message || 'Failed to resend code.';
+        render();
+      });
+    }
+    return;
+  }
+
   // Exit Confirmation Modal button handlers (Android Back Button Protection)
   if (el.id === 'btn-stay-on-site' || el.closest('#btn-stay-on-site')) {
     state.showExitPrompt = false;
@@ -3849,11 +4336,210 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// Security Form Submit Handlers
+async function handleResetCredentialsSubmit(form) {
+  const prevId = String(form.querySelector('#reset-prev-id')?.value || '').trim();
+  const prevPin = String(form.querySelector('#reset-prev-pin')?.value || '').trim();
+  const choice = state.securityResetChoice || 'both';
+
+  const newId = (choice === 'id' || choice === 'both') ? String(form.querySelector('#reset-new-id')?.value || '').trim() : null;
+  const confirmNewId = (choice === 'id' || choice === 'both') ? String(form.querySelector('#reset-confirm-new-id')?.value || '').trim() : null;
+
+  const newPin = (choice === 'pin' || choice === 'both') ? String(form.querySelector('#reset-new-pin')?.value || '').trim() : null;
+  const confirmNewPin = (choice === 'pin' || choice === 'both') ? String(form.querySelector('#reset-confirm-new-pin')?.value || '').trim() : null;
+
+  state.securityModalError = '';
+  state.securityModalSuccess = '';
+
+  if (!prevId || !prevPin) {
+    state.securityModalError = 'Previous Registration Number and Previous PIN are required.';
+    render();
+    return;
+  }
+
+  if (choice === 'id' || choice === 'both') {
+    if (!newId) {
+      state.securityModalError = 'Please enter your new Registration Number.';
+      render();
+      return;
+    }
+    if (newId !== confirmNewId) {
+      state.securityModalError = 'New Registration Numbers do not match. Please verify.';
+      render();
+      return;
+    }
+  }
+
+  if (choice === 'pin' || choice === 'both') {
+    if (!newPin) {
+      state.securityModalError = 'Please enter your new PIN.';
+      render();
+      return;
+    }
+    if (newPin.length < 4 || newPin.length > 8) {
+      state.securityModalError = 'New PIN must be between 4 and 8 characters.';
+      render();
+      return;
+    }
+    if (newPin !== confirmNewPin) {
+      state.securityModalError = 'New PINs do not match. Please verify.';
+      render();
+      return;
+    }
+  }
+
+  state.securityModalBusy = true;
+  render();
+
+  try {
+    const res = await resetResponderCredentials(prevId, prevPin, { newId, newPin });
+    state.securityModalBusy = false;
+    state.showResetModal = false;
+    forceLogoutAllDevices(`Credentials updated successfully! All active responder sessions across all devices have been terminated. Please sign in with your updated credentials (${res.effectiveId}).`);
+  } catch (err) {
+    state.securityModalBusy = false;
+    state.securityModalError = err.message || 'Credential reset failed. Please check your entries.';
+    render();
+  }
+}
+
+async function handleForgotEmailSubmit(form) {
+  const email = String(form.querySelector('#forgot-email-input')?.value || '').trim();
+  state.securityModalError = '';
+  state.securityModalSuccess = '';
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    state.securityModalError = 'Please enter a valid registered email address.';
+    render();
+    return;
+  }
+
+  state.securityModalBusy = true;
+  render();
+
+  try {
+    const res = await requestResponderEmailOtp(email);
+    state.securityModalBusy = false;
+    state.forgotStep = 'otp';
+    state.forgotEmail = email;
+    state.forgotOtpId = res.otpId;
+    state.forgotMaskedEmail = res.maskedEmail || email;
+    state.forgotOtpExpiresAt = res.expiresAt;
+    state.forgotDebugCode = res.debugCode;
+    state.securityModalSuccess = res.message || 'If this email is registered, a verification code has been dispatched.';
+    startOtpTimer();
+    render();
+  } catch (err) {
+    state.securityModalBusy = false;
+    state.securityModalError = err.message || 'Unable to request verification code. Please try again.';
+    render();
+  }
+}
+
+async function handleForgotOtpSubmit(form) {
+  const code = String(form.querySelector('#forgot-otp-input')?.value || '').trim();
+  state.securityModalError = '';
+  state.securityModalSuccess = '';
+
+  if (!code || code.length !== 6) {
+    state.securityModalError = 'Please enter the 6-digit verification code.';
+    render();
+    return;
+  }
+
+  state.securityModalBusy = true;
+  render();
+
+  try {
+    const res = await verifyResponderEmailOtp(state.forgotOtpId, code);
+    state.securityModalBusy = false;
+    state.forgotStep = 'reset';
+    state.forgotRecoveryToken = res.recoveryToken;
+    state.securityModalSuccess = 'Identity verified successfully! You may now set your new credentials.';
+    if (otpTimerInterval) clearInterval(otpTimerInterval);
+    render();
+  } catch (err) {
+    state.securityModalBusy = false;
+    state.securityModalError = err.message || 'Invalid verification code. Please try again.';
+    render();
+  }
+}
+
+async function handleForgotResetSubmit(form) {
+  const choice = state.securityForgotChoice || 'both';
+
+  const newId = (choice === 'id' || choice === 'both') ? String(form.querySelector('#forgot-new-id')?.value || '').trim() : null;
+  const confirmNewId = (choice === 'id' || choice === 'both') ? String(form.querySelector('#forgot-confirm-new-id')?.value || '').trim() : null;
+
+  const newPin = (choice === 'pin' || choice === 'both') ? String(form.querySelector('#forgot-new-pin')?.value || '').trim() : null;
+  const confirmNewPin = (choice === 'pin' || choice === 'both') ? String(form.querySelector('#forgot-confirm-new-pin')?.value || '').trim() : null;
+
+  state.securityModalError = '';
+  state.securityModalSuccess = '';
+
+  if (choice === 'id' || choice === 'both') {
+    if (!newId) {
+      state.securityModalError = 'Please enter your new Registration Number.';
+      render();
+      return;
+    }
+    if (newId !== confirmNewId) {
+      state.securityModalError = 'New Registration Numbers do not match. Please verify.';
+      render();
+      return;
+    }
+  }
+
+  if (choice === 'pin' || choice === 'both') {
+    if (!newPin) {
+      state.securityModalError = 'Please enter your new PIN.';
+      render();
+      return;
+    }
+    if (newPin.length < 4 || newPin.length > 8) {
+      state.securityModalError = 'New PIN must be between 4 and 8 characters.';
+      render();
+      return;
+    }
+    if (newPin !== confirmNewPin) {
+      state.securityModalError = 'New PINs do not match. Please verify.';
+      render();
+      return;
+    }
+  }
+
+  state.securityModalBusy = true;
+  render();
+
+  try {
+    const res = await recoverResponderCredentials(state.forgotRecoveryToken, { newId, newPin });
+    state.securityModalBusy = false;
+    state.showForgotModal = false;
+    forceLogoutAllDevices(`Credentials successfully recovered! All previous responder sessions have been terminated. Please sign in with your updated credentials (${res.effectiveId}).`);
+  } catch (err) {
+    state.securityModalBusy = false;
+    state.securityModalError = err.message || 'Credential recovery failed. Please try again.';
+    render();
+  }
+}
+
 // Form submit delegation
 app.addEventListener('submit', (e) => {
   if (e.target.id === 'form-add-student') {
     e.preventDefault();
     handleAddStudentSubmit();
+  } else if (e.target.id === 'resetCredentialsForm') {
+    e.preventDefault();
+    handleResetCredentialsSubmit(e.target);
+  } else if (e.target.id === 'forgotEmailForm') {
+    e.preventDefault();
+    handleForgotEmailSubmit(e.target);
+  } else if (e.target.id === 'forgotOtpForm') {
+    e.preventDefault();
+    handleForgotOtpSubmit(e.target);
+  } else if (e.target.id === 'forgotResetForm') {
+    e.preventDefault();
+    handleForgotResetSubmit(e.target);
   }
 });
 
@@ -3905,7 +4591,7 @@ async function initAppSession() {
       const raw = safeStorage.get('sos-user');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001' || parsed.id === '250131' || parsed.regdNo === '250131')) {
+        if (parsed && (parsed.id === 'RESP-001' || parsed.regdNo === 'RESP-001' || parsed.id === 'RESP-1111' || parsed.regdNo === 'RESP-1111' || parsed.id === '250131' || parsed.regdNo === '250131')) {
           safeStorage.clearSession();
         } else {
           saved = parsed;
@@ -3932,6 +4618,7 @@ async function initAppSession() {
           initResponderPush();
           attachFirestoreListener();
           attachRegisteredStudentsListener();
+          startResponderSessionWatcher();
           checkIncidentQueryParam();
         }
 

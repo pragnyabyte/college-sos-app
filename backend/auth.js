@@ -44,14 +44,18 @@ export function createSessionUser({ name, regdNo, role, departmentId, isResponde
     return { id: cleanId, name: cleanName, role: cleanRole, departmentId: dept };
 }
 
-export const AUTHORIZED_RESPONDER_ID = 'RESP-1111';
-export const AUTHORIZED_RESPONDER_PIN = '2026';
+export const AUTHORIZED_RESPONDER_ID = 'ER-2026';
+export const AUTHORIZED_RESPONDER_PIN = '2611';
 
 export async function verifyResponderCredentials(responderId, pin, name) {
     const id = String(responderId || '').trim();
     const cleanPin = String(pin || '').trim();
     if (!id) {
         throw Object.assign(new Error('Registration / ID No. is required'), { status: 400 });
+    }
+
+    if (id === 'RESP-1111') {
+        throw Object.assign(new Error('Registration ID RESP-1111 has been retired. Please use ER-2026.'), { status: 401, field: 'registration_number' });
     }
 
     const expectedId = process.env.SOS_RESPONDER_ID || AUTHORIZED_RESPONDER_ID;
@@ -63,33 +67,35 @@ export async function verifyResponderCredentials(responderId, pin, name) {
         responderDoc = await db.collection('emergency_responders').findOne({ responderId: id });
     } catch {}
 
-    // Allow primary responder RESP-1111 or any authorized responder document in database
+    // Allow primary responder ER-2026 or any authorized responder document in database
     if (id !== expectedId && !responderDoc) {
-        throw Object.assign(new Error('Invalid Registration Number'), { status: 401, field: 'registration_number' });
+        throw Object.assign(new Error('Invalid Registration Number or PIN'), { status: 401 });
     }
 
-    const targetPin = (id === expectedId) ? expectedPin : (responderDoc?.pin || expectedPin);
+    if (responderDoc && (responderDoc.authorized === false || responderDoc.deactivated === true)) {
+        throw Object.assign(new Error('This responder account is deactivated or unauthorized.'), { status: 403 });
+    }
 
-    if (id === expectedId && responderDoc && responderDoc.pin !== expectedPin) {
-        try {
-            const db = await getDb();
-            await db.collection('emergency_responders').updateOne(
-                { responderId: id },
-                { $set: { pin: expectedPin, updatedAt: new Date().toISOString() } }
-            );
-        } catch {}
+    let pinMatches = false;
+    if (responderDoc && responderDoc.pinSalt && responderDoc.pinHash) {
+        const computed = scryptSync(String(cleanPin), responderDoc.pinSalt, 64).toString('hex');
+        pinMatches = computed === responderDoc.pinHash;
+    } else {
+        const targetPin = (id === expectedId) ? expectedPin : (responderDoc?.pin || expectedPin);
+        pinMatches = cleanPin === targetPin;
     }
 
     // Validate PIN
-    if (cleanPin !== targetPin) {
-        throw Object.assign(new Error('Invalid PIN'), { status: 401, field: 'pin' });
+    if (!pinMatches) {
+        throw Object.assign(new Error('Invalid Registration Number or PIN'), { status: 401, field: 'pin' });
     }
 
     return {
         id,
-        name: name || responderDoc?.name || (id === expectedId ? 'Campus Emergency Response Unit (RESP-1111)' : `Emergency Responder (${id})`),
+        name: name || responderDoc?.name || (id === expectedId ? 'Campus Emergency Response Unit (ER-2026)' : `Emergency Responder (${id})`),
         role: 'RESPONDER',
-        departmentId: responderDoc?.departmentId || 'DEPT_SECURITY'
+        departmentId: responderDoc?.departmentId || 'DEPT_SECURITY',
+        sessionVersion: Number(responderDoc?.sessionVersion || 1)
     };
 }
 
@@ -140,7 +146,7 @@ export async function registerStudent({ name, regdNo, password }) {
     }
 
     // 4. Cannot register as authorized responder ID
-    if (cleanId === AUTHORIZED_RESPONDER_ID) {
+    if (cleanId === AUTHORIZED_RESPONDER_ID || cleanId === 'RESP-1111' || cleanId.startsWith('ER-')) {
         throw Object.assign(new Error('This registration ID is reserved for emergency services.'), { status: 403 });
     }
 

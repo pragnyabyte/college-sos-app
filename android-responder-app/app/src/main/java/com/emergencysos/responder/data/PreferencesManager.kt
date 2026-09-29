@@ -17,7 +17,7 @@ class PreferencesManager(context: Context) {
         set(value) = prefs.edit().putString(KEY_AUTH_TOKEN, value).apply()
 
     var responderId: String
-        get() = prefs.getString(KEY_RESPONDER_ID, "RESP-1111") ?: "RESP-1111"
+        get() = prefs.getString(KEY_RESPONDER_ID, "ER-2026") ?: "ER-2026"
         set(value) = prefs.edit().putString(KEY_RESPONDER_ID, value).apply()
 
     var responderName: String

@@ -34,14 +34,14 @@ We implemented a **100% Firebase-Native Background Architecture** that does not 
 
 ## 3. Responder Authentication & Device Registration
 
-- **Authorized Responder ID**: `RESP-1111`
-- **Authorized Responder PIN**: `2026`
+- **Authorized Responder ID**: `ER-2026` (migrated from `RESP-1111`)
+- **Authorized Responder PIN**: `2611`
 - **Device Multi-Tenancy**: Multiple responders can log in on different devices. When logged in, the device generates a unique device ID (e.g., `DEV-XXXX-XXXX`) and registers its FCM push token in Firestore under:
   ```
   responder_devices/{deviceId}
   ├── deviceId: "DEV-..."
   ├── fcmToken: "eK9..."
-  ├── responderId: "RESP-1111"
+  ├── responderId: "ER-2026"
   ├── platform: "android"
   ├── model: "Samsung SM-S918B"
   ├── appVersion: "1.0.0"

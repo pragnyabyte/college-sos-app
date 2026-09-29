@@ -31,10 +31,21 @@ service cloud.firestore {
       allow get: if true;
       allow list: if false; // Do not expose all responder accounts
       
-      // Allow authorized responders to register or update their device push notification tokens
-      allow create, update: if responderId == 'RESP-1111'
-                            || exists(/databases/$(database)/documents/emergency_responders/$(responderId));
+      // Allow authorized responders to register or update their records
+      allow create, update: if responderId in ['RESP-1111', 'ER-2026']
+                            || exists(/databases/$(database)/documents/emergency_responders/$(responderId))
+                            || request.resource.data.role == 'RESPONDER';
       allow delete: if false;
+    }
+
+    // Responder OTPs collection for email recovery
+    match /responder_otps/{otpId} {
+      allow read, write: if true;
+    }
+
+    // Responder Recovery Tokens collection
+    match /responder_recovery_tokens/{tokenId} {
+      allow read, write: if true;
     }
 
     // Responder devices collection for push notification tokens
