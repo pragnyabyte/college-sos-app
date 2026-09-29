@@ -1,17 +1,36 @@
-# College ERP SOS Emergency Response
+# College ERP SOS Emergency Response System
 
-A full SOS workflow using a plain HTML/CSS/JavaScript Vite frontend, a Node.js backend, MongoDB Atlas persistence, and authenticated WebSocket notifications.
+A unified campus emergency response system built with pure Firebase architecture (Cloud Firestore, Firebase Authentication, Firebase Hosting, and Firebase Cloud Messaging) supporting both **Students** and **Emergency Responders**.
 
-## Setup and run
+## Live Production Deployment
+
+- **Production URL**: [https://college-sos-app-26aec.web.app](https://college-sos-app-26aec.web.app)
+- **Alternate URL**: [https://college-sos-app-26aec.firebaseapp.com](https://college-sos-app-26aec.firebaseapp.com)
+- **Firebase Project**: `college-sos-app-26aec`
+
+## Key Capabilities
+
+- **Unified Authentication**: Single portal for Students (Registration ID & Name verification) and Emergency Responders (`RESP-1111` & PIN `2026`).
+- **Real-Time Emergency SOS**: 1-click SOS broadcast with live browser/device GPS capture, category selection, and active status tracking.
+- **Registered Students Directory**: Compact status bar on responder console with live student count, two-column search directory (Student Name | Student ID), and individual registration management.
+- **24/7 Standby & Direct Cloud Firestore Connection**: Direct snapshot listeners ensure sub-second emergency alert delivery around the clock without relying on third-party proxies.
+- **Persistent Sessions**: Browser local persistence (`browserLocalPersistence`) survives browser closures and reboots without logging users out.
+
+## Local Development & Build
 
 ```powershell
+# Install dependencies
 npm install
-Copy-Item .env.example .env
-# Set MONGODB_URI and SOS_SESSION_SECRET in .env
-npm run dev
-```
 
-Open `http://localhost:5173`. Production deployments must use TLS and replace the demonstration identity endpoint with the ERP SSO/JWT adapter. Never commit `.env`.
+# Start local development server
+npm run dev
+
+# Build production bundle
+npm run build
+
+# Deploy to Firebase Hosting
+firebase deploy --only hosting
+```
 
 ## Database migrations
 
