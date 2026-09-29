@@ -1,6 +1,7 @@
 import {
   setupResponderFCM,
   registerResponderDeviceFirestore,
+  unregisterResponderDeviceFirestore,
   getDeviceId,
   registerStudentWithFirebase,
   verifyStudentWithFirebase,
@@ -786,13 +787,13 @@ function triggerResponderEmergencyAlert(incident, isManualTest = false) {
     try { navigator.vibrate([500, 250, 500, 250, 500, 250, 500]); } catch {}
   }
 
-  // 3. Desktop/Phone Web Notification if permitted
-  if ('Notification' in window && Notification.permission === 'granted') {
+  // 3. Desktop/Phone Web Notification if permitted (only when tab is in background or inactive)
+  if ('Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') {
     try {
       new Notification(`🚨 EMERGENCY SOS: ${incident.id}`, {
-        body: `${incident.student_name || incident.studentName || 'Student'} reported emergency at ${incident.location?.building || incident.building || 'Campus'}`,
+        body: `${incident.student_name || incident.studentName || 'Student'} reported emergency at ${incident.location?.building || incident.building || 'Campus Location'}`,
         icon: '/favicon.ico',
-        tag: `sos-${incident.id}-${Date.now()}`,
+        tag: `sos-alert-${incident.id}`,
         requireInteraction: true
       });
     } catch (e) {
@@ -3642,6 +3643,7 @@ document.addEventListener('click', async (e) => {
       subscribedDetailsIncidentId = null;
     }
     if (isResponderUser(state.user)) {
+      unregisterResponderDeviceFirestore().catch(() => {});
       api(`/api/responder/device/${encodeURIComponent(getDeviceId())}`, { method: 'DELETE' }).catch(() => {});
     }
     try { state.socket?.close(); } catch {}

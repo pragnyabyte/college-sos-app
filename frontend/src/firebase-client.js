@@ -1012,6 +1012,26 @@ export async function registerResponderDeviceFirestore(fcmToken, responderId = '
 }
 
 /**
+ * Deactivates this browser's push device registration in Firestore on logout.
+ */
+export async function unregisterResponderDeviceFirestore() {
+  try {
+    const db = getFirebaseFirestore();
+    if (!db) return;
+    const deviceId = getDeviceId();
+    const docRef = doc(db, 'responder_devices', String(deviceId));
+    await setDoc(docRef, {
+      active: false,
+      loggedOutAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+    console.log('[SOS:FCM] Device marked inactive in Firestore on logout:', deviceId);
+  } catch (err) {
+    console.warn('[SOS:FCM] Note on unregistering device in Firestore:', err.message);
+  }
+}
+
+/**
  * Backward compatibility alias for syncIncidentToFirestore.
  */
 export async function syncIncidentToFirestore(incident) {
