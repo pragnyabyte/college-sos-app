@@ -8,7 +8,7 @@ let fcmInitialized = false;
 let fcmError = null;
 let hasServiceAccount = false;
 
-export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || 'RESP-1111';
+export const RESPONDER_ID = process.env.SOS_RESPONDER_ID || 'ER-2026';
 export const DEFAULT_RESPONDER_PIN = process.env.SOS_RESPONDER_PIN || '2026';
 
 /**
@@ -71,12 +71,16 @@ export function initFirebaseAdmin() {
 export async function ensurePermanentResponder() {
   try {
     initFirebaseAdmin();
+    if (!hasServiceAccount) {
+      console.log('[FCM] Notice: Running in local environment without service account credentials. Permanent responder check skipped.');
+      return;
+    }
     const firestore = getFirestore();
     const pin = process.env.SOS_RESPONDER_PIN || DEFAULT_RESPONDER_PIN;
 
     await firestore.collection('emergency_responders').doc(RESPONDER_ID).set({
       responderId: RESPONDER_ID,
-      name: 'Campus Emergency Response Unit (RESP-1111)',
+      name: 'Campus Emergency Response Unit (ER-2026)',
       role: 'responder',
       departmentId: 'DEPT_SECURITY',
       active: true,
@@ -86,12 +90,12 @@ export async function ensurePermanentResponder() {
 
     console.log(`[FCM] Permanent responder ${RESPONDER_ID} verified/updated in Cloud Firestore.`);
   } catch (e) {
-    console.error('[FCM] Error ensuring permanent responder:', e.message);
+    console.warn('[FCM] Notice ensuring permanent responder:', e.message);
   }
 }
 
 /**
- * Registers or updates a responder device FCM token under RESP-1111 in Cloud Firestore.
+ * Registers or updates a responder device FCM token under ER-2026 in Cloud Firestore.
  * Supports multiple independent phones and web installations per responder.
  */
 export async function registerResponderDevice({
@@ -686,4 +690,60 @@ export async function deleteIncidentFromFirestoreAdmin(id) {
     return false;
   }
 }
+
+/**
+ * Real-time Cloud Firestore incident listener that automatically triggers FCM Web Push
+ * notifications whenever ANY student creates an SOS incident directly in Cloud Firestore.
+ * Prevents re-alerting for historical or already handled incidents.
+ */
+export function startFirestoreIncidentPushWatcher() {
+  initFirebaseAdmin();
+  const db = getFirestore();
+  let isInitial = true;
+
+  console.log('[SOS:PushWatcher] Attaching real-time Cloud Firestore incidents listener for automated FCM push...');
+
+  return db.collection('incidents').onSnapshot(async (snapshot) => {
+    if (isInitial) {
+      isInitial = false;
+      console.log(`[SOS:PushWatcher] Initial snapshot synchronized (${snapshot.size} existing incidents). Standing by for new SOS events.`);
+      return;
+    }
+
+    for (const change of snapshot.docChanges()) {
+      if (change.type === 'added') {
+        const incident = change.doc.data();
+        const id = change.doc.id;
+
+        // Skip non-active incidents
+        if (['RESOLVED', 'CANCELLED', 'REJECTED', 'ACCEPTED', 'RESPONDING', 'ARRIVED'].includes(incident.status)) {
+          continue;
+        }
+
+        // Check recency: only alert for genuinely new SOS created within past 10 minutes
+        const createdTime = new Date(incident.created_at || incident.createdAt || Date.now()).getTime();
+        if (Date.now() - createdTime > 10 * 60 * 1000) {
+          continue;
+        }
+
+        // Idempotency check: prevent duplicate FCM alerts for same incident
+        const logRef = db.collection('incidents').doc(id).collection('delivery_logs').doc('fcm_dispatch');
+        const logSnap = await logRef.get();
+        if (logSnap.exists) {
+          continue;
+        }
+
+        console.log(`[SOS:PushWatcher] 🚨 NEW EMERGENCY SOS DETECTED IN FIRESTORE: ${id} from ${incident.student_name}. Dispatched automated FCM push!`);
+        try {
+          await sendEmergencySosNotification(incident, false);
+        } catch (err) {
+          console.warn(`[SOS:PushWatcher] Push dispatch error:`, err.message);
+        }
+      }
+    }
+  }, (err) => {
+    console.warn('[SOS:PushWatcher] Firestore listener notice:', err.message);
+  });
+}
+
 

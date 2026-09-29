@@ -23,6 +23,7 @@ import {
   updateDevicePing,
   checkAndEscalateIncidents,
   logNotificationAudit,
+  startFirestoreIncidentPushWatcher,
   RESPONDER_ID
 } from './fcm.js';
 import {
@@ -850,6 +851,7 @@ try {
   initFirebaseAdmin();
   await ensurePermanentResponder();
   startEscalationWorker(5000, broadcast);
+  startFirestoreIncidentPushWatcher();
 
   server.listen(port, '0.0.0.0', () => {
     console.log(`[SOS:Express] Backend server listening on port ${port} on 0.0.0.0`);

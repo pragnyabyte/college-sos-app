@@ -416,11 +416,10 @@ export async function setupResponderFCM({ vapidKey, onMessageReceived, onTokenRe
       return { supported: true, permission, reason: 'Notification permission was denied or dismissed' };
     }
 
-    // Retrieve FCM token
-    const tokenOptions = { serviceWorkerRegistration: swReg };
-    if (vapidKey) {
-      tokenOptions.vapidKey = vapidKey;
-    }
+    // Retrieve FCM token using official VAPID key
+    const DEFAULT_VAPID_KEY = 'BDOU99-h67HcA6JeFXHbSNMu7e2yNNu3RzoMj8TM4W88jITfq7ZmPvIM1Iv-4_l2LxQcYwhqby2xGpWwzjfAnG4';
+    const effectiveVapidKey = vapidKey || (typeof import.meta !== 'undefined' && import.meta.env?.VITE_FIREBASE_VAPID_KEY) || DEFAULT_VAPID_KEY;
+    const tokenOptions = { serviceWorkerRegistration: swReg, vapidKey: effectiveVapidKey };
 
     let token = null;
     try {
@@ -599,23 +598,17 @@ export async function verifyStudentWithFirebase(regdNo, enteredName = null) {
 
 /**
  * Authenticates Emergency Responder credentials against Firestore.
- * Verifies ER-2026 (or updated ID) using salted PBKDF2 hash.
- * Rejects deactivated RESP-1111 and old PIN.
+ * Strictly verifies fixed credentials: ER-2026 and PIN 2026.
+ * Rejects empty or invalid credentials with exact error message "Invalid Responder ID or PIN."
  */
 export async function verifyResponderWithFirebase(responderId, pin, enteredName = null) {
   const id = String(responderId || '').trim();
   const cleanPin = String(pin || '').trim();
 
-  if (!id) {
-    throw Object.assign(new Error('Registration / ID No. is required.'), { status: 400, field: 'registration_number' });
-  }
-  if (!cleanPin) {
-    throw Object.assign(new Error('Responder PIN is required.'), { status: 400, field: 'pin' });
-  }
-
-  // Reject permanently retired responder ID
-  if (id === 'RESP-1111') {
-    throw Object.assign(new Error('Registration ID RESP-1111 has been retired. Please use updated responder ID ER-2026.'), { status: 401, field: 'registration_number' });
+  // Validate ID and PIN are non-empty and match fixed credentials
+  if (!id || !cleanPin || id !== 'ER-2026' || cleanPin !== '2026') {
+    recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id: id || 'UNKNOWN', reason: 'Invalid credentials' }, id || 'ER-2026').catch(() => {});
+    throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 401 });
   }
 
   const db = getFirebaseFirestore();
@@ -634,35 +627,26 @@ export async function verifyResponderWithFirebase(responderId, pin, enteredName 
 
   if (!snap || !snap.exists()) {
     recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id, reason: 'Unknown responder ID' }, id).catch(() => {});
-    // Generic authentication error prevents credential enumeration
-    throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401 });
+    throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 401 });
   }
 
   const data = snap.data();
   if (data.authorized !== true || data.deactivated === true) {
     recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id, reason: 'Deactivated account' }, id).catch(() => {});
-    throw Object.assign(new Error('This responder account is deactivated or unauthorized.'), { status: 403 });
+    throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 403 });
   }
 
-  // Verify PIN via salted PBKDF2 hash
+  // Verify PIN via salted PBKDF2 hash or direct pin check
   let pinValid = false;
   if (data.pinSalt && data.pinHash) {
     pinValid = await verifyPinWeb(cleanPin, data.pinSalt, data.pinHash);
-  } else if (id === 'ER-2026' && cleanPin === '2611') {
-    // Bootstrap initial PIN if hash not yet generated
+  } else if (cleanPin === '2026' || data.pin === '2026') {
     pinValid = true;
-    const computed = await hashPinWeb('2611');
-    updateDoc(respRef, {
-      pinSalt: computed.salt,
-      pinHash: computed.hash,
-      sessionVersion: data.sessionVersion || 1,
-      updatedAt: new Date().toISOString()
-    }).catch(() => {});
   }
 
   if (!pinValid) {
     recordSecurityAuditEvent('RESPONDER_LOGIN_FAILURE', { id, reason: 'Invalid PIN' }, id).catch(() => {});
-    throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401, field: 'pin' });
+    throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 401, field: 'pin' });
   }
 
   // Ensure persistent Firebase Auth user exists
@@ -675,522 +659,13 @@ export async function verifyResponderWithFirebase(responderId, pin, enteredName 
     name,
     role: 'RESPONDER',
     departmentId: data.departmentId || 'DEPT_SECURITY',
-    sessionVersion: currentSessionVersion,
-    recoveryEmail: data.recoveryEmail || 'jitendra.responder@college.edu'
+    sessionVersion: currentSessionVersion
   };
 
   recordSecurityAuditEvent('RESPONDER_LOGIN_SUCCESS', { id, sessionVersion: currentSessionVersion }, id).catch(() => {});
 
   const token = `sos-resp-token-${id}-${currentSessionVersion}-${Date.now()}`;
   return { user, token };
-}
-
-/**
- * Normal reset using previous credentials.
- * Atomically updates credentials in Firestore and increments sessionVersion,
- * invalidating all previous sessions on all devices.
- */
-export async function resetResponderCredentials(previousId, previousPin, { newId = null, newPin = null }) {
-  const pId = String(previousId || '').trim();
-  const pPin = String(previousPin || '').trim();
-  const nId = newId ? String(newId).trim() : null;
-  const nPin = newPin ? String(newPin).trim() : null;
-
-  if (!pId) throw Object.assign(new Error('Previous Registration Number is required.'), { status: 400 });
-  if (!pPin) throw Object.assign(new Error('Previous PIN is required.'), { status: 400 });
-  if (!nId && !nPin) throw Object.assign(new Error('Please specify a new Registration Number, new PIN, or both.'), { status: 400 });
-
-  if (pId === 'RESP-1111') {
-    throw Object.assign(new Error('Invalid credentials. Please verify your registration number and PIN.'), { status: 401 });
-  }
-
-  const db = getFirebaseFirestore();
-  if (!db) throw new Error('Database service unavailable.');
-
-  const respRef = doc(db, 'emergency_responders', pId);
-  const snap = await getDoc(respRef);
-  if (!snap.exists()) {
-    throw Object.assign(new Error('Invalid credentials. Please verify your registration number and PIN.'), { status: 401 });
-  }
-
-  const data = snap.data();
-  if (data.authorized !== true || data.deactivated === true) {
-    throw Object.assign(new Error('Invalid credentials. Please verify your registration number and PIN.'), { status: 401 });
-  }
-
-  // Verify previous PIN using salted hash
-  let pinValid = false;
-  if (data.pinSalt && data.pinHash) {
-    pinValid = await verifyPinWeb(pPin, data.pinSalt, data.pinHash);
-  } else if (pId === 'ER-2026' && pPin === '2611') {
-    pinValid = true;
-  }
-
-  if (!pinValid) {
-    throw Object.assign(new Error('Invalid credentials. Please verify your registration number and PIN.'), { status: 401 });
-  }
-
-  // Validate new credentials
-  if (nId) {
-    if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(nId)) {
-      throw Object.assign(new Error('Invalid new Registration Number format.'), { status: 400 });
-    }
-    if (nId === 'RESP-1111') {
-      throw Object.assign(new Error('The registration number RESP-1111 is reserved/retired.'), { status: 400 });
-    }
-    if (nId !== pId) {
-      // Check for conflicts
-      const existingResp = await getDoc(doc(db, 'emergency_responders', nId));
-      if (existingResp.exists() && existingResp.data()?.authorized === true) {
-        throw Object.assign(new Error(`Registration number "${nId}" is already in use by an active responder.`), { status: 409 });
-      }
-      const existingStudent = await getDoc(doc(db, 'students', nId.toUpperCase()));
-      if (existingStudent.exists()) {
-        throw Object.assign(new Error(`Registration number "${nId}" is already registered to a student.`), { status: 409 });
-      }
-    }
-  }
-
-  if (nPin) {
-    if (nPin.length < 4 || nPin.length > 8) {
-      throw Object.assign(new Error('New PIN must be between 4 and 8 characters.'), { status: 400 });
-    }
-  }
-
-  // Generate new salted hash for PIN
-  let finalSalt = data.pinSalt;
-  let finalHash = data.pinHash;
-  if (nPin) {
-    const computed = await hashPinWeb(nPin);
-    finalSalt = computed.salt;
-    finalHash = computed.hash;
-  }
-
-  const nextSessionVersion = Number(data.sessionVersion || 1) + 1;
-  const now = new Date().toISOString();
-  const effectiveId = nId || pId;
-
-  if (nId && nId !== pId) {
-    // ID changed: create new responder document with incremented sessionVersion
-    await setDoc(doc(db, 'emergency_responders', nId), {
-      ...data,
-      responderId: nId,
-      name: data.name || `Campus Emergency Response Unit (${nId})`,
-      authorized: true,
-      deactivated: false,
-      pinSalt: finalSalt,
-      pinHash: finalHash,
-      sessionVersion: nextSessionVersion,
-      migratedFrom: pId,
-      updatedAt: now
-    });
-
-    // Deactivate previous document and increment sessionVersion so any lingering sessions are killed
-    await setDoc(doc(db, 'emergency_responders', pId), {
-      authorized: false,
-      deactivated: true,
-      migratedTo: nId,
-      sessionVersion: nextSessionVersion,
-      updatedAt: now
-    }, { merge: true });
-  } else {
-    // Only PIN changed: atomically update existing doc with incremented sessionVersion
-    await updateDoc(respRef, {
-      pinSalt: finalSalt,
-      pinHash: finalHash,
-      sessionVersion: nextSessionVersion,
-      updatedAt: now
-    });
-  }
-
-  console.log(`%c[SOS:Security] Responder credentials reset successful! New ID: ${effectiveId}, Session Version: ${nextSessionVersion}`, 'color:#10b981;font-weight:bold');
-
-  recordSecurityAuditEvent('CREDENTIALS_RESET_SUCCESS', {
-    prevId: pId,
-    newId: effectiveId,
-    changedId: !!(nId && nId !== pId),
-    changedPin: !!nPin,
-    sessionVersion: nextSessionVersion
-  }, effectiveId).catch(() => {});
-
-  recordSecurityAuditEvent('ALL_DEVICES_SESSION_INVALIDATION', {
-    responderId: effectiveId,
-    sessionVersion: nextSessionVersion
-  }, effectiveId).catch(() => {});
-
-  return { success: true, effectiveId, sessionVersion: nextSessionVersion };
-}
-
-/**
- * Requests an email OTP verification code for forgotten credentials.
- * Enforces requirement that recovery only works using an email already verified and linked to ER-2026.
- * Always returns a generic response to prevent account/email enumeration.
- * Never stores plaintext OTPs and never returns the raw OTP to the frontend.
- */
-export async function requestResponderEmailOtp(email) {
-  const cleanEmail = String(email || '').trim().toLowerCase();
-  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-    throw Object.assign(new Error('Please enter a valid email address.'), { status: 400 });
-  }
-
-  const db = getFirebaseFirestore();
-  if (!db) throw new Error('Database service unavailable.');
-
-  // Generic response prevents account enumeration
-  const genericResponse = {
-    success: true,
-    message: 'If this email is registered, a verification code will be sent.'
-  };
-
-  // Find active responder matching this enrolled email
-  let matchedResponder = null;
-  const candidates = ['ER-2026'];
-  for (const cid of candidates) {
-    try {
-      const snap = await getDoc(doc(db, 'emergency_responders', cid));
-      if (snap.exists()) {
-        const d = snap.data();
-        if (d.authorized === true && !d.deactivated) {
-          if (!d.recoveryEmail || d.recoveryEmailVerified === false) {
-            // Requirement 4: If no verified recovery email enrolled, disable email-based recovery
-            recordSecurityAuditEvent('RECOVERY_CODE_REQUESTED', { error: 'No enrolled recovery email' }, cid).catch(() => {});
-            return {
-              success: false,
-              disabled: true,
-              message: 'Email-based recovery is disabled for this account. A verified recovery email has not yet been enrolled. A verified recovery email must first be enrolled by an authenticated responder in Security Settings.'
-            };
-          }
-          if (String(d.recoveryEmail || '').trim().toLowerCase() === cleanEmail) {
-            matchedResponder = { id: cid, ...d };
-            break;
-          }
-        }
-      }
-    } catch {}
-  }
-
-  if (!matchedResponder) {
-    recordSecurityAuditEvent('RECOVERY_CODE_REQUESTED', { matched: false }, 'UNKNOWN').catch(() => {});
-    return genericResponse;
-  }
-
-  // Generate cryptographically secure 6-digit random code
-  const codeInt = (typeof crypto !== 'undefined' && crypto.getRandomValues)
-    ? (crypto.getRandomValues(new Uint32Array(1))[0] % 900000) + 100000
-    : Math.floor(100000 + Math.random() * 900000);
-  const rawCode = String(codeInt);
-
-  // Hash code with PBKDF2 before storing in Firestore (raw code is NEVER stored in database)
-  const otpHash = await hashPinWeb(rawCode);
-  const otpId = 'otp-' + Math.random().toString(36).slice(2, 9) + '-' + Date.now();
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
-
-  await setDoc(doc(db, 'responder_otps', otpId), {
-    otpId,
-    responderId: matchedResponder.id,
-    email: cleanEmail,
-    salt: otpHash.salt,
-    hashedCode: otpHash.hash,
-    attempts: 0,
-    maxAttempts: 5,
-    used: false,
-    expiresAt,
-    createdAt: new Date().toISOString()
-  });
-
-  const parts = cleanEmail.split('@');
-  const maskedEmail = parts[0].slice(0, 2) + '••••@' + parts[1];
-  recordSecurityAuditEvent('RECOVERY_CODE_REQUESTED', { matched: true, maskedEmail }, matchedResponder.id).catch(() => {});
-
-  // Clean, secure response: NEVER returns debugCode or raw OTP!
-  return {
-    success: true,
-    otpId,
-    expiresAt,
-    maskedEmail,
-    message: `If this email is registered, a verification code will be sent.`
-  };
-}
-
-/**
- * Verifies the 6-digit OTP code on the backend and issues a short-lived recovery token.
- */
-export async function verifyResponderEmailOtp(otpId, enteredCode) {
-  const cleanId = String(otpId || '').trim();
-  const cleanCode = String(enteredCode || '').trim();
-
-  if (!cleanId || !cleanCode) {
-    throw Object.assign(new Error('Verification code is required.'), { status: 400 });
-  }
-
-  const db = getFirebaseFirestore();
-  if (!db) throw new Error('Database service unavailable.');
-
-  const otpRef = doc(db, 'responder_otps', cleanId);
-  const snap = await getDoc(otpRef);
-  if (!snap.exists()) {
-    throw Object.assign(new Error('Invalid or expired verification code. Please request a new code.'), { status: 400 });
-  }
-
-  const data = snap.data();
-  if (data.used === true) {
-    throw Object.assign(new Error('This verification code has already been used. Please request a new code.'), { status: 400 });
-  }
-
-  if (Date.now() > Number(data.expiresAt || 0)) {
-    throw Object.assign(new Error('This verification code has expired. Please request a new code.'), { status: 400 });
-  }
-
-  const currentAttempts = Number(data.attempts || 0);
-  const maxAttempts = Number(data.maxAttempts || 5);
-  if (currentAttempts >= maxAttempts) {
-    throw Object.assign(new Error('Maximum verification attempts exceeded. This code is locked. Please request a new one.'), { status: 400 });
-  }
-
-  // Verify OTP code hash
-  const isValid = await verifyPinWeb(cleanCode, data.salt, data.hashedCode);
-  if (!isValid) {
-    await updateDoc(otpRef, { attempts: currentAttempts + 1 });
-    const remaining = maxAttempts - (currentAttempts + 1);
-    recordSecurityAuditEvent('RECOVERY_CODE_FAILED', { otpId: cleanId, attempts: currentAttempts + 1 }, data.responderId).catch(() => {});
-    throw Object.assign(new Error(`Invalid verification code. ${remaining} attempt(s) remaining.`), { status: 401 });
-  }
-
-  // Mark OTP used
-  await updateDoc(otpRef, { used: true, verifiedAt: new Date().toISOString() });
-  recordSecurityAuditEvent('RECOVERY_CODE_VERIFIED', { otpId: cleanId }, data.responderId).catch(() => {});
-
-  // Issue single-use recovery authorization token (valid for 15 minutes)
-  const recoveryToken = 'rec-' + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '-' + Date.now();
-  await setDoc(doc(db, 'responder_recovery_tokens', recoveryToken), {
-    recoveryToken,
-    responderId: data.responderId,
-    email: data.email,
-    used: false,
-    expiresAt: Date.now() + 15 * 60 * 1000,
-    createdAt: new Date().toISOString()
-  });
-
-  return {
-    success: true,
-    recoveryToken,
-    responderId: data.responderId
-  };
-}
-
-/**
- * Completes forgotten credential recovery without requiring old credentials.
- * Atomically updates credentials and increments sessionVersion, forcing logout across all devices.
- */
-export async function recoverResponderCredentials(recoveryToken, { newId = null, newPin = null }) {
-  const token = String(recoveryToken || '').trim();
-  const nId = newId ? String(newId).trim() : null;
-  const nPin = newPin ? String(newPin).trim() : null;
-
-  if (!token) throw Object.assign(new Error('Recovery authorization token is required.'), { status: 400 });
-  if (!nId && !nPin) throw Object.assign(new Error('Please specify a new Registration Number, new PIN, or both.'), { status: 400 });
-
-  const db = getFirebaseFirestore();
-  if (!db) throw new Error('Database service unavailable.');
-
-  const tokenRef = doc(db, 'responder_recovery_tokens', token);
-  const snap = await getDoc(tokenRef);
-  if (!snap.exists()) {
-    throw Object.assign(new Error('Invalid or expired recovery authorization. Please restart recovery.'), { status: 401 });
-  }
-
-  const tokenData = snap.data();
-  if (tokenData.used === true || Date.now() > Number(tokenData.expiresAt || 0)) {
-    throw Object.assign(new Error('This recovery authorization has expired or already been used. Please restart recovery.'), { status: 401 });
-  }
-
-  // Mark token used immediately to prevent reuse
-  await updateDoc(tokenRef, { used: true, completedAt: new Date().toISOString() });
-
-  const currentId = tokenData.responderId;
-  const respRef = doc(db, 'emergency_responders', currentId);
-  const respSnap = await getDoc(respRef);
-  if (!respSnap.exists()) {
-    throw Object.assign(new Error('Responder account not found.'), { status: 404 });
-  }
-
-  const responderData = respSnap.data();
-
-  // Validate new credentials
-  if (nId) {
-    if (!/^[A-Za-z0-9_\-\.\/]{2,50}$/.test(nId)) {
-      throw Object.assign(new Error('Invalid new Registration Number format.'), { status: 400 });
-    }
-    if (nId === 'RESP-1111') {
-      throw Object.assign(new Error('The registration number RESP-1111 is reserved/retired.'), { status: 400 });
-    }
-    if (nId !== currentId) {
-      const existingResp = await getDoc(doc(db, 'emergency_responders', nId));
-      if (existingResp.exists() && existingResp.data()?.authorized === true) {
-        throw Object.assign(new Error(`Registration number "${nId}" is already in use.`), { status: 409 });
-      }
-      const existingStudent = await getDoc(doc(db, 'students', nId.toUpperCase()));
-      if (existingStudent.exists()) {
-        throw Object.assign(new Error(`Registration number "${nId}" is already registered to a student.`), { status: 409 });
-      }
-    }
-  }
-
-  if (nPin) {
-    if (nPin.length < 4 || nPin.length > 8) {
-      throw Object.assign(new Error('New PIN must be between 4 and 8 characters.'), { status: 400 });
-    }
-  }
-
-  let finalSalt = responderData.pinSalt;
-  let finalHash = responderData.pinHash;
-  if (nPin) {
-    const computed = await hashPinWeb(nPin);
-    finalSalt = computed.salt;
-    finalHash = computed.hash;
-  }
-
-  const nextSessionVersion = Number(responderData.sessionVersion || 1) + 1;
-  const now = new Date().toISOString();
-  const effectiveId = nId || currentId;
-
-  if (nId && nId !== currentId) {
-    // Create new document with updated ID
-    await setDoc(doc(db, 'emergency_responders', nId), {
-      ...responderData,
-      responderId: nId,
-      name: responderData.name || `Campus Emergency Response Unit (${nId})`,
-      authorized: true,
-      deactivated: false,
-      pinSalt: finalSalt,
-      pinHash: finalHash,
-      sessionVersion: nextSessionVersion,
-      migratedFrom: currentId,
-      updatedAt: now
-    });
-
-    // Deactivate previous document
-    await setDoc(doc(db, 'emergency_responders', currentId), {
-      authorized: false,
-      deactivated: true,
-      migratedTo: nId,
-      sessionVersion: nextSessionVersion,
-      updatedAt: now
-    }, { merge: true });
-  } else {
-    // Update existing document
-    await updateDoc(respRef, {
-      pinSalt: finalSalt,
-      pinHash: finalHash,
-      sessionVersion: nextSessionVersion,
-      updatedAt: now
-    });
-  }
-
-  console.log(`%c[SOS:Security] Forgotten credentials successfully recovered for: ${effectiveId}, Session Version: ${nextSessionVersion}`, 'color:#10b981;font-weight:bold');
-
-  recordSecurityAuditEvent('CREDENTIALS_RECOVERED_SUCCESS', {
-    responderId: effectiveId,
-    changedId: !!(nId && nId !== currentId),
-    changedPin: !!nPin,
-    sessionVersion: nextSessionVersion
-  }, effectiveId).catch(() => {});
-
-  recordSecurityAuditEvent('ALL_DEVICES_SESSION_INVALIDATION', {
-    responderId: effectiveId,
-    sessionVersion: nextSessionVersion
-  }, effectiveId).catch(() => {});
-
-  return { success: true, effectiveId, sessionVersion: nextSessionVersion };
-}
-
-/**
- * Securely enrolls or updates the responder's recovery email.
- * Requires verifying the responder's current registration number and PIN.
- * Unauthenticated users are strictly blocked from changing or attaching recovery emails.
- */
-export async function enrollResponderRecoveryEmail(responderId, currentPin, newEmail) {
-  const id = String(responderId || '').trim();
-  const pin = String(currentPin || '').trim();
-  const cleanEmail = String(newEmail || '').trim().toLowerCase();
-
-  if (!id) throw Object.assign(new Error('Registration Number is required.'), { status: 400 });
-  if (!pin) throw Object.assign(new Error('Current PIN is required.'), { status: 400 });
-  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-    throw Object.assign(new Error('Please enter a valid email address.'), { status: 400 });
-  }
-
-  const db = getFirebaseFirestore();
-  if (!db) throw new Error('Database service unavailable.');
-
-  const respRef = doc(db, 'emergency_responders', id);
-  const snap = await getDoc(respRef);
-  if (!snap.exists()) {
-    throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401 });
-  }
-
-  const data = snap.data();
-  if (data.authorized !== true || data.deactivated === true) {
-    throw Object.assign(new Error('This responder account is deactivated or unauthorized.'), { status: 403 });
-  }
-
-  // Verify PIN via salted PBKDF2 hash
-  let pinValid = false;
-  if (data.pinSalt && data.pinHash) {
-    pinValid = await verifyPinWeb(pin, data.pinSalt, data.pinHash);
-  } else if (id === 'ER-2026' && pin === '2611') {
-    pinValid = true;
-  }
-
-  if (!pinValid) {
-    recordSecurityAuditEvent('RECOVERY_EMAIL_ENROLL_FAILED', { id, reason: 'Invalid PIN' }, id).catch(() => {});
-    throw Object.assign(new Error('Invalid Registration Number or PIN.'), { status: 401 });
-  }
-
-  const now = new Date().toISOString();
-  await updateDoc(respRef, {
-    recoveryEmail: cleanEmail,
-    recoveryEmailVerified: true,
-    recoveryEmailEnrolledAt: now,
-    enrolledBy: id,
-    updatedAt: now
-  });
-
-  const parts = cleanEmail.split('@');
-  const maskedEmail = parts[0].slice(0, 2) + '••••@' + parts[1];
-  recordSecurityAuditEvent('RECOVERY_EMAIL_ENROLLED', { responderId: id, maskedEmail }, id).catch(() => {});
-
-  return {
-    success: true,
-    maskedEmail,
-    message: `Recovery email successfully verified and enrolled (${maskedEmail}).`
-  };
-}
-
-/**
- * Returns safe security status of the responder account without leaking raw email.
- */
-export async function getResponderSecurityStatus(responderId = 'ER-2026') {
-  try {
-    const db = getFirebaseFirestore();
-    if (!db) return { hasRecoveryEmail: false, maskedEmail: '' };
-    const snap = await getDoc(doc(db, 'emergency_responders', responderId));
-    if (!snap.exists()) return { hasRecoveryEmail: false, maskedEmail: '' };
-    const d = snap.data();
-    const email = String(d.recoveryEmail || '').trim();
-    if (!email || d.recoveryEmailVerified === false) {
-      return { hasRecoveryEmail: false, maskedEmail: '', sessionVersion: d.sessionVersion || 1 };
-    }
-    const parts = email.split('@');
-    const maskedEmail = parts[0].slice(0, 2) + '••••@' + parts[1];
-    return {
-      hasRecoveryEmail: true,
-      maskedEmail,
-      sessionVersion: d.sessionVersion || 1
-    };
-  } catch {
-    return { hasRecoveryEmail: false, maskedEmail: '' };
-  }
 }
 
 /**
@@ -1515,6 +990,7 @@ export async function deleteIncidentFromFirestore(incidentId, user = null) {
 export async function registerResponderDeviceFirestore(fcmToken, responderId = 'ER-2026') {
   if (!fcmToken) return;
   const deviceId = getDeviceId();
+  const cleanId = String(responderId || 'ER-2026').trim() === 'RESP-1111' ? 'ER-2026' : String(responderId || 'ER-2026').trim();
   try {
     const db = getFirebaseFirestore();
     if (!db) return;
@@ -1522,12 +998,14 @@ export async function registerResponderDeviceFirestore(fcmToken, responderId = '
     await setDoc(docRef, {
       deviceId,
       fcmToken,
-      responderId,
+      responderId: cleanId,
+      active: true,
       platform: 'web',
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+      lastSeen: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }, { merge: true });
-    console.log('%c[SOS:FCM] Responder device push token saved in Cloud Firestore: ' + deviceId, 'color:#10b981');
+    console.log('%c[SOS:FCM] Responder device push token saved in Cloud Firestore: ' + deviceId + ' (' + cleanId + ')', 'color:#10b981;font-weight:bold');
   } catch (err) {
     console.warn('[SOS:FCM] Note on device registration in Firestore:', err.message);
   }

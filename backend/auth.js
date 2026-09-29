@@ -45,54 +45,32 @@ export function createSessionUser({ name, regdNo, role, departmentId, isResponde
 }
 
 export const AUTHORIZED_RESPONDER_ID = 'ER-2026';
-export const AUTHORIZED_RESPONDER_PIN = '2611';
+export const AUTHORIZED_RESPONDER_PIN = '2026';
 
 export async function verifyResponderCredentials(responderId, pin, name) {
     const id = String(responderId || '').trim();
     const cleanPin = String(pin || '').trim();
-    if (!id) {
-        throw Object.assign(new Error('Registration / ID No. is required'), { status: 400 });
+    if (!id || !cleanPin) {
+        throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 400 });
     }
 
-    if (id === 'RESP-1111') {
-        throw Object.assign(new Error('Registration ID RESP-1111 has been retired. Please use ER-2026.'), { status: 401, field: 'registration_number' });
+    if (id !== 'ER-2026' || cleanPin !== '2026') {
+        throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 401 });
     }
-
-    const expectedId = process.env.SOS_RESPONDER_ID || AUTHORIZED_RESPONDER_ID;
-    const expectedPin = process.env.SOS_RESPONDER_PIN || AUTHORIZED_RESPONDER_PIN;
 
     let responderDoc = null;
     try {
         const db = await getDb();
-        responderDoc = await db.collection('emergency_responders').findOne({ responderId: id });
+        responderDoc = await db.collection('emergency_responders').findOne({ responderId: 'ER-2026' });
     } catch {}
 
-    // Allow primary responder ER-2026 or any authorized responder document in database
-    if (id !== expectedId && !responderDoc) {
-        throw Object.assign(new Error('Invalid Registration Number or PIN'), { status: 401 });
-    }
-
     if (responderDoc && (responderDoc.authorized === false || responderDoc.deactivated === true)) {
-        throw Object.assign(new Error('This responder account is deactivated or unauthorized.'), { status: 403 });
-    }
-
-    let pinMatches = false;
-    if (responderDoc && responderDoc.pinSalt && responderDoc.pinHash) {
-        const computed = scryptSync(String(cleanPin), responderDoc.pinSalt, 64).toString('hex');
-        pinMatches = computed === responderDoc.pinHash;
-    } else {
-        const targetPin = (id === expectedId) ? expectedPin : (responderDoc?.pin || expectedPin);
-        pinMatches = cleanPin === targetPin;
-    }
-
-    // Validate PIN
-    if (!pinMatches) {
-        throw Object.assign(new Error('Invalid Registration Number or PIN'), { status: 401, field: 'pin' });
+        throw Object.assign(new Error('Invalid Responder ID or PIN.'), { status: 403 });
     }
 
     return {
-        id,
-        name: name || responderDoc?.name || (id === expectedId ? 'Campus Emergency Response Unit (ER-2026)' : `Emergency Responder (${id})`),
+        id: 'ER-2026',
+        name: name || responderDoc?.name || 'Campus Emergency Response Unit (ER-2026)',
         role: 'RESPONDER',
         departmentId: responderDoc?.departmentId || 'DEPT_SECURITY',
         sessionVersion: Number(responderDoc?.sessionVersion || 1)

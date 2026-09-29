@@ -31,31 +31,16 @@ console.log('   ✓ PASS: Eye icon toggle is cleanly implemented.\n');
 
 // 3. Verify Login Validation Rules:
 console.log('3. Checking Validation Rules in handleLogin()...');
-// Responder ID must be RESP-1111
-assert.ok(appJs.includes("regdNo !== 'RESP-1111'"), 'Must reject if regdNo is not RESP-1111');
-assert.ok(appJs.includes("showLoginError('Invalid Registration Number')"), 'Must show clear error for invalid ID');
-// PIN must be 2026
-assert.ok(appJs.includes("pin !== '2026'"), 'Must reject if pin is not 2026');
-assert.ok(appJs.includes("showLoginError('Invalid PIN')"), 'Must show clear error for invalid PIN');
-
-// Selective Field Clearing:
-// If ID is wrong, only regdInput is cleared, pinInput is untouched
-const wrongIdBlock = appJs.slice(appJs.indexOf("if (regdNo !== 'RESP-1111')"), appJs.indexOf("if (pin !== '2026')"));
-assert.ok(wrongIdBlock.includes("regdInput.value = ''"), 'Must clear regdInput when ID is invalid');
-assert.ok(!wrongIdBlock.includes("pinInput.value = ''"), 'Must NOT clear pinInput when ID is invalid');
-console.log('   ✓ PASS: Wrong ID clears ONLY the Registration Number field; PIN is preserved.\n');
-
-// If PIN is wrong, only pinInput is cleared, regdInput is untouched
-const wrongPinBlock = appJs.slice(appJs.indexOf("if (pin !== '2026')"), appJs.indexOf("state.busy = true", appJs.indexOf("if (pin !== '2026')")));
-assert.ok(wrongPinBlock.includes("pinInput.value = ''"), 'Must clear pinInput when PIN is invalid');
-assert.ok(!wrongPinBlock.includes("regdInput.value = ''"), 'Must NOT clear regdInput when PIN is invalid');
-console.log('   ✓ PASS: Wrong PIN clears ONLY the PIN field; Registration Number is preserved.\n');
+// Responder ID must be ER-2026 and PIN must be 2026
+assert.ok(appJs.includes("regdNo !== 'ER-2026' || pin !== '2026'"), 'Must reject if credentials are not ER-2026 / 2026');
+assert.ok(appJs.includes("showLoginError('Invalid Responder ID or PIN.')"), 'Must show exact error Invalid Responder ID or PIN.');
+console.log('   ✓ PASS: Fixed ER-2026 and PIN 2026 validated with exact error message.\n');
 
 // 4. Verify isResponderUser helper
 console.log('4. Checking isResponderUser() helper...');
-assert.ok(appJs.includes("u.id === 'RESP-1111'"), 'isResponderUser must recognize RESP-1111');
+assert.ok(appJs.includes("u.id === 'ER-2026'"), 'isResponderUser must recognize ER-2026');
 assert.ok(!appJs.includes("u.id === '250131'"), 'isResponderUser must NOT have hardcoded 250131');
-console.log('   ✓ PASS: isResponderUser properly identifies RESP-1111.\n');
+console.log('   ✓ PASS: isResponderUser properly identifies ER-2026.\n');
 
 // 5. Verify Student Sign-In UI Elements, Full Name Field, and Removal of Duplicate Row
 console.log('5. Checking Student & Responder Sign-In UI structure with Name fields...');

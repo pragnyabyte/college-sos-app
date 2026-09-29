@@ -25,6 +25,8 @@ async function api(path, method = 'GET', body = null, token = null, headers = {}
   return { status: res.status, ok: res.ok, headers: res.headers, data };
 }
 
+let srvOutput = '';
+
 async function run() {
   console.log('======================================================================');
   console.log('COMPREHENSIVE VERIFICATION: ALL 12 MASTER PROMPT REQUIREMENTS');
@@ -37,7 +39,6 @@ async function run() {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
-  let srvOutput = '';
   srv.stdout.on('data', d => srvOutput += d.toString());
   srv.stderr.on('data', d => srvOutput += d.toString());
 
@@ -146,9 +147,9 @@ async function run() {
     // 10. Responders can retrieve incoming SOS events
     console.log('Item 10: Responders can retrieve incoming SOS events');
     const respLogin = await api('/api/auth/login', 'POST', {
-      name: 'Campus Emergency Response Unit',
-      regdNo: 'RESP-1111',
-      pin: '2026',
+      name: 'Campus Emergency Response Unit (ER-2026)',
+      regdNo: 'ER-2026',
+      pin: '2611',
       role: 'RESPONDER'
     });
     assert.equal(respLogin.status, 200, 'Responder login must return 200 OK');
@@ -208,5 +209,6 @@ async function run() {
 
 run().catch(err => {
   console.error('\n❌ VERIFICATION FAILED:', err);
+  if (srvOutput) console.error('\n--- SERVER OUTPUT ---\n', srvOutput);
   process.exit(1);
 });

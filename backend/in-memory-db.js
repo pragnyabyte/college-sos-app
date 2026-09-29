@@ -191,6 +191,32 @@ class MemoryCollection {
     return this.findOneAndUpdate(filter, update, options);
   }
 
+  async updateMany(filter, update, options = {}) {
+    let modifiedCount = 0;
+    for (let i = 0; i < this.docs.length; i++) {
+      if (this._matches(this.docs[i], filter)) {
+        const doc = this.docs[i];
+        if (update.$inc) {
+          for (const [k, v] of Object.entries(update.$inc)) {
+            doc[k] = (doc[k] || 0) + v;
+          }
+        }
+        if (update.$set) {
+          for (const [k, v] of Object.entries(update.$set)) {
+            setNested(doc, k, JSON.parse(JSON.stringify(v)));
+          }
+        }
+        if (update.$unset) {
+          for (const k of Object.keys(update.$unset)) {
+            unsetNested(doc, k);
+          }
+        }
+        modifiedCount++;
+      }
+    }
+    return { matchedCount: modifiedCount, modifiedCount, acknowledged: true };
+  }
+
   async deleteOne(filter) {
     const idx = this.docs.findIndex(d => this._matches(d, filter));
     if (idx !== -1) {

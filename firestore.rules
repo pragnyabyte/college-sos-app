@@ -26,50 +26,11 @@ service cloud.firestore {
       allow update: if false;
     }
 
-    // Emergency Responders collection: pre-authorized responder identity
+    // Emergency Responders collection: pre-authorized fixed responder identity
     match /emergency_responders/{responderId} {
       allow get: if true;
       allow list: if false; // Do not expose all responder accounts to public enumeration
-      
-      // Deny public registration of arbitrary new responder accounts.
-      // Only allowed when explicitly migrating an existing verified responder identity.
-      allow create: if request.resource.data.role == 'RESPONDER'
-                    && request.resource.data.migratedFrom is string
-                    && exists(/databases/$(database)/documents/emergency_responders/$(request.resource.data.migratedFrom));
-                    
-      allow delete: if false; // Responders cannot be deleted
-      
-      // Updates permitted only for authorized responder documents
-      allow update: if request.resource.data.role == 'RESPONDER'
-                    && (request.resource.data.authorized == true || request.resource.data.deactivated == true)
-                    && request.resource.data.sessionVersion >= resource.data.sessionVersion;
-    }
-
-    // Responder OTPs collection for email recovery
-    match /responder_otps/{otpId} {
-      allow list: if false; // Deny public enumeration of OTPs
-      allow get: if true;
-      
-      // Allow creation of secure, salted, single-use OTP
-      allow create: if request.resource.data.keys().hasAll(['otpId', 'responderId', 'hashedCode', 'salt', 'expiresAt', 'attempts', 'used'])
-                    && request.resource.data.attempts == 0
-                    && request.resource.data.used == false;
-                    
-      // Updates can ONLY increment attempts or mark used (cannot tamper with code, salt, or target)
-      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attempts', 'used', 'verifiedAt']);
-      allow delete: if false;
-    }
-
-    // Responder Recovery Tokens collection
-    match /responder_recovery_tokens/{tokenId} {
-      allow list: if false; // Deny public enumeration of recovery tokens
-      allow get: if true;
-      
-      allow create: if request.resource.data.keys().hasAll(['recoveryToken', 'responderId', 'used', 'expiresAt'])
-                    && request.resource.data.used == false;
-                    
-      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'completedAt', 'consumedAt']);
-      allow delete: if false;
+      allow create, update, delete: if false; // Fixed credentials; modifications not allowed from client
     }
 
     // Immutable Security Audit Logs collection

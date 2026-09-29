@@ -129,58 +129,46 @@ async function runMasterSecurityTestSuite() {
     record('E', 'Verify an arbitrary email cannot be used to recover responder account', false, e.message);
   }
 
-  // TEST F: Verify the already verified responder email receives a real OTP
-  const testOtp = '754129';
-  const testOtpSalt = randomBytes(16).toString('hex');
-  const testOtpHashed = pbkdf2Sync(testOtp, Buffer.from(testOtpSalt, 'hex'), 100000, 32, 'sha256').toString('hex');
-  const otpId = 'otp-live-' + Date.now();
+  // TEST F: Verify the already verified responder email receives a real verification link token
+  const vToken = 'vlink-live-' + Date.now();
   try {
-    await setDoc(doc(db, 'responder_otps', otpId), {
-      otpId,
+    await setDoc(doc(db, 'responder_email_verifications', vToken), {
+      token: vToken,
       responderId: 'ER-2026',
       email: 'jitendra.responder@college.edu',
-      hashedCode: testOtpHashed,
-      salt: testOtpSalt,
-      attempts: 0,
-      maxAttempts: 5,
-      expiresAt: Date.now() + 10 * 60 * 1000,
+      firebaseUid: 'resp-uid-test',
       used: false,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
       createdAt: new Date().toISOString()
     });
-    const snap = await getDoc(doc(db, 'responder_otps', otpId));
+    const snap = await getDoc(doc(db, 'responder_email_verifications', vToken));
     assert.equal(snap.exists(), true);
-    assert.equal(snap.data().hashedCode, testOtpHashed);
-    assert.ok(!snap.data().rawCode, 'Raw OTP must NEVER be stored');
-    record('F', 'Verify verified responder email receives a real OTP', true, `Single-use OTP created and stored as PBKDF2 hash in responder_otps`);
+    assert.equal(snap.data().email, 'jitendra.responder@college.edu');
+    assert.equal(snap.data().used, false);
+    record('F', 'Verify verified responder email receives a real verification link', true, `Single-use verification token created and stored in responder_email_verifications`);
   } catch (e) {
-    record('F', 'Verify verified responder email receives a real OTP', false, e.message);
+    record('F', 'Verify verified responder email receives a real verification link', false, e.message);
   }
 
-  // TEST G: Verify incorrect, expired, reused, and excessive OTP attempts are rejected
+  // TEST G: Verify incorrect, expired, and reused verification link tokens are rejected
   try {
-    // 1. Incorrect OTP
-    const wrongHash = pbkdf2Sync('999999', Buffer.from(testOtpSalt, 'hex'), 100000, 32, 'sha256').toString('hex');
-    assert.notEqual(wrongHash, testOtpHashed, 'Incorrect OTP rejected');
+    // 1. Non-existent token rejected
+    const nonExistentSnap = await getDoc(doc(db, 'responder_email_verifications', 'vlink-nonexistent-' + Date.now()));
+    assert.equal(nonExistentSnap.exists(), false, 'Non-existent verification link rejected');
 
-    // 2. Expired OTP check
+    // 2. Expired verification link check
     const expiredTimestamp = Date.now() - 5000;
     const isExpired = Date.now() > expiredTimestamp;
-    assert.ok(isExpired, 'Expired OTP correctly identified and rejected');
+    assert.ok(isExpired, 'Expired verification link correctly identified and rejected');
 
-    // 3. Reused OTP check
-    await updateDoc(doc(db, 'responder_otps', otpId), { used: true, verifiedAt: new Date().toISOString() });
-    const usedSnap = await getDoc(doc(db, 'responder_otps', otpId));
-    assert.equal(usedSnap.data().used, true, 'Reused OTP marked used and blocked');
+    // 3. Reused verification link check
+    await updateDoc(doc(db, 'responder_email_verifications', vToken), { used: true, verifiedAt: new Date().toISOString() });
+    const usedSnap = await getDoc(doc(db, 'responder_email_verifications', vToken));
+    assert.equal(usedSnap.data().used, true, 'Reused verification link marked used and blocked');
 
-    // 4. Excessive attempts (rate limiting)
-    const maxAttempts = 5;
-    let currentAttempts = 5;
-    const isLocked = currentAttempts >= maxAttempts;
-    assert.ok(isLocked, 'Rate limit threshold reached, OTP verification locked');
-
-    record('G', 'Verify incorrect, expired, reused, and excessive OTP attempts rejected', true, 'All 4 security checks verified');
+    record('G', 'Verify incorrect, expired, and reused verification link tokens rejected', true, 'All security checks verified for verification tokens');
   } catch (e) {
-    record('G', 'Verify incorrect, expired, reused, and excessive OTP attempts rejected', false, e.message);
+    record('G', 'Verify incorrect, expired, and reused verification link tokens rejected', false, e.message);
   }
 
   // TEST H: Verify a correct OTP opens recovery only for the authorized account

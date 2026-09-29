@@ -26,12 +26,24 @@ function formatEmergencyNotification(payload) {
 
   const id = d.id || d.sosId || 'INCIDENT';
   const priority = d.priority || 'HIGH';
-  const student = d.studentName ? `${d.studentName} (${d.studentId || ''})` : 'Student';
-  const location = d.location || (d.building ? `${d.building} ${d.floor || ''} ${d.room || ''}` : 'Campus');
-  const desc = d.description ? ` - ${d.description}` : '';
+  const studentName = d.studentName || d.student_name || 'Student';
+  const studentId = (d.studentId || d.student_id) ? ` (${d.studentId || d.student_id})` : '';
+  const student = `${studentName}${studentId}`;
+  const category = String(d.categoryId || d.category_id || 'Emergency').toUpperCase();
+  const location = d.location || (d.building ? `${d.building} ${d.floor || ''} ${d.room || ''}`.trim() : 'Campus Location');
+  const desc = d.description ? ` · "${d.description}"` : '';
+
+  let timeStr = '';
+  try {
+    const rawTime = d.timestamp || d.created_at || d.createdAt;
+    if (rawTime) {
+      const dt = new Date(rawTime);
+      timeStr = ` · ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    }
+  } catch {}
 
   const title = n.title || `🚨 EMERGENCY SOS: ${id} (${priority})`;
-  const body = n.body || `${student} reported emergency at ${location}${desc}`;
+  const body = n.body || `${student} · ${category} at ${location}${desc}${timeStr}`;
 
   return {
     title,
@@ -45,11 +57,11 @@ function formatEmergencyNotification(payload) {
       vibrate: [500, 250, 500, 250, 500, 250, 500],
       data: {
         id,
-        url: d.url || `/?incidentId=${encodeURIComponent(id)}`,
+        url: d.url || d.click_action || `/?incidentId=${encodeURIComponent(id)}`,
         timestamp: d.timestamp || new Date().toISOString()
       },
       actions: [
-        { action: 'open', title: 'Open Incident' }
+        { action: 'open', title: '🚨 View Emergency Alert' }
       ]
     }
   };
